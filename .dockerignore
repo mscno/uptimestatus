@@ -3,3 +3,4 @@ coverage
 .git
 .env
 *.profraw
+uptimestatus-deploy

@@ -9,3 +9,6 @@
 
 # Local config file (see uptimestatus.example.toml)
 /uptimestatus.toml
+
+# Separate local repository for the maintainer's Fly deployment.
+/uptimestatus-deploy/

@@ -40,6 +40,21 @@ fn config(url: &str, backend: Backend) -> Config {
     }
 }
 
+#[tokio::test]
+async fn required_local_database_refuses_missing_file_and_report() {
+    let path = std::env::temp_dir().join(format!("uptime-required-{}.db", std::process::id()));
+    let mut config = config(&format!("turso:{}", path.display()), Backend::Turso);
+    config.database.require_existing = true;
+    assert!(uptime_server::serve::connect(&config).await.is_err());
+    assert!(
+        !path.exists(),
+        "a guarded deployment must not create an empty database"
+    );
+    std::fs::write(&path, vec![0; 4096]).unwrap();
+    assert!(uptime_server::serve::connect(&config).await.is_err());
+    std::fs::remove_file(&path).unwrap();
+}
+
 async fn serves(url: &str, backend: Backend) {
     let shutdown = CancellationToken::new();
     let server = tokio::spawn(uptime_server::run(

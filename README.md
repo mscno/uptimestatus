@@ -98,6 +98,7 @@ they are never logged. [`.env.example`](.env.example) lists the common ones.
 | `UPTIMESTATUS_DATABASE__BACKEND` | `postgres` | `postgres`, `sqlite` or `turso`; must match the `DATABASE_URL` scheme |
 | `UPTIMESTATUS_DATABASE__AUTH_TOKEN` | – | Turso Cloud auth token; keep it out of the URL |
 | `UPTIMESTATUS_DATABASE__MAX_CONNECTIONS` | `8` | PostgreSQL pool size; SQLite and Turso use one connection |
+| `UPTIMESTATUS_DATABASE__REQUIRE_EXISTING` | `false` | Local Turso deployments can require an existing file and verified import report before connecting |
 | `UPTIMESTATUS_APP_URL` | – | Public admin URL; its host is the app host (required) |
 | `UPTIMESTATUS_EDGE_HOST` | – | Hostname custom domains CNAME to; requests for it redirect to the console (required) |
 | `UPTIMESTATUS_HTTP__HOST` | `::` | Bind address |

@@ -22,6 +22,7 @@ figment.workspace = true
 humantime-serde.workspace = true
 jiff.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
@@ -32,6 +33,7 @@ uptime-notify.workspace = true
 uptime-probe.workspace = true
 uptime-runtime.workspace = true
 uptime-store.workspace = true
+uptime-transfer.workspace = true
 uptime-web.workspace = true
 url.workspace = true
 

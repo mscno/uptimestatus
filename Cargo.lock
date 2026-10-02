@@ -5666,7 +5666,7 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "uptime-domain"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "humantime-serde",
  "jiff",
@@ -5681,7 +5681,7 @@ dependencies = [
 
 [[package]]
 name = "uptime-notify"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hex",
  "hmac 0.13.0",
@@ -5700,7 +5700,7 @@ dependencies = [
 
 [[package]]
 name = "uptime-probe"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hickory-resolver",
  "jiff",
@@ -5722,7 +5722,7 @@ dependencies = [
 
 [[package]]
 name = "uptime-runtime"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures-util",
  "jiff",
@@ -5743,7 +5743,7 @@ dependencies = [
 
 [[package]]
 name = "uptime-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -5756,6 +5756,7 @@ dependencies = [
  "pretty_assertions",
  "reqwest",
  "serde",
+ "serde_json",
  "thiserror",
  "tokio",
  "tokio-util",
@@ -5767,6 +5768,7 @@ dependencies = [
  "uptime-runtime",
  "uptime-store",
  "uptime-testkit",
+ "uptime-transfer",
  "uptime-web",
  "url",
  "wiremock",
@@ -5774,7 +5776,7 @@ dependencies = [
 
 [[package]]
 name = "uptime-store"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -5801,7 +5803,7 @@ dependencies = [
 
 [[package]]
 name = "uptime-testkit"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hickory-resolver",
  "serde_json",
@@ -5815,8 +5817,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "uptime-transfer"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures-util",
+ "hex",
+ "jiff",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+ "tokio-postgres",
+ "turso",
+ "uptime-store",
+ "uptime-testkit",
+ "uuid",
+]
+
+[[package]]
 name = "uptime-web"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "axum",
  "base64 0.23.1",

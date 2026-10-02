@@ -184,7 +184,7 @@ impl Listener {
 /// with Toasty: `sslmode=disable|prefer|require|verify-ca|verify-full`
 /// (the verify modes and `sslrootcert=system` check certificates against the
 /// platform's trust store).
-fn connection_config(
+pub fn connection_config(
     url: &str,
 ) -> Result<
     (

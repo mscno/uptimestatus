@@ -13,7 +13,7 @@ FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json -p uptime-server
 COPY . .
-RUN cargo build --release --locked -p uptime-server --bin uptimestatus
+RUN cargo build --release --locked -p uptime-server -p uptime-transfer --bins
 
 # ── Runtime ───────────────────────────────────────────────────────────────
 FROM debian:trixie-slim AS runtime
@@ -24,6 +24,7 @@ RUN apt-get update \
  && mkdir -p /data \
  && chown app:app /data
 COPY --from=builder /app/target/release/uptimestatus /app/uptimestatus
+COPY --from=builder /app/target/release/uptime-transfer /app/uptime-transfer
 # Starts as root only to hand the storage volume to `app`, then drops to it.
 COPY deploy/entrypoint.sh /app/entrypoint.sh
 # Dual-stack bind: some platforms' proxies reach the app over IPv6.

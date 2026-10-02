@@ -23,6 +23,33 @@ use crate::{cli::Roles, config::Config};
 
 /// Connects to the database described by `config`.
 pub async fn connect(config: &Config) -> anyhow::Result<Store> {
+    if config.database.require_existing {
+        anyhow::ensure!(
+            config.database.backend == Backend::Turso,
+            "database.require_existing requires a local Turso database"
+        );
+        let path = config
+            .database_url
+            .expose()
+            .strip_prefix("turso:")
+            .filter(|path| path.starts_with('/') && !path.starts_with("//"))
+            .context("database.require_existing requires an absolute local turso: path")?;
+        let path = std::path::Path::new(path);
+        let metadata = std::fs::metadata(path).context("required database is missing")?;
+        anyhow::ensure!(
+            metadata.is_file() && metadata.len() >= 4096,
+            "required database is empty or invalid"
+        );
+        let marker = std::fs::read(uptime_transfer::turso::marker_path(path))
+            .context("required database has no completed import report")?;
+        let report: uptime_transfer::snapshot::Report = serde_json::from_slice(&marker)?;
+        anyhow::ensure!(
+            report.format == 1
+                && report.schema == uptime_transfer::snapshot::schema_hash()
+                && report.tables.len() == uptime_transfer::schema::TABLES.len(),
+            "required database import report is incompatible"
+        );
+    }
     let options = ConnectOptions {
         max_connections: config.database.max_connections,
         ..Default::default()

@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.98"
 publish = false
@@ -17,6 +17,7 @@ uptime-notify = { path = "crates/uptime-notify" }
 uptime-probe = { path = "crates/uptime-probe" }
 uptime-runtime = { path = "crates/uptime-runtime" }
 uptime-store = { path = "crates/uptime-store" }
+uptime-transfer = { path = "crates/uptime-transfer" }
 uptime-testkit = { path = "crates/uptime-testkit" }
 uptime-web = { path = "crates/uptime-web" }
 

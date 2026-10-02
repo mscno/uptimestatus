@@ -228,6 +228,8 @@ pub struct DatabaseConfig {
     pub backend: uptime_store::Backend,
     pub max_connections: usize,
     pub auth_token: Option<Secret>,
+    /// File deployments can require a completed import before opening the database.
+    pub require_existing: bool,
 }
 
 impl Default for DatabaseConfig {
@@ -236,6 +238,7 @@ impl Default for DatabaseConfig {
             backend: uptime_store::Backend::Postgres,
             max_connections: 8,
             auth_token: None,
+            require_existing: false,
         }
     }
 }

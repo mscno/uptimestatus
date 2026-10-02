@@ -1,0 +1,41 @@
+version = 1
+
+[[migrations]]
+id = 1101000000000000001
+name = "0000_schema.sql"
+snapshot_name = "0000_snapshot.toml"
+
+[[migrations]]
+id = 1101000000000000002
+name = "0001_integrity.sql"
+snapshot_name = "0000_snapshot.toml"
+
+[[migrations]]
+id = 8451646287711267625
+name = "0002_maintenance_repeat.sql"
+snapshot_name = "0002_snapshot.toml"
+
+[[migrations]]
+id = 8645009566105042965
+name = "0003_monitor_tags.sql"
+snapshot_name = "0003_snapshot.toml"
+
+[[migrations]]
+id = 5514229761759670081
+name = "0004_api_tokens.sql"
+snapshot_name = "0004_snapshot.toml"
+
+[[migrations]]
+id = 3132668537734372846
+name = "0005_channel_routing.sql"
+snapshot_name = "0005_snapshot.toml"
+
+[[migrations]]
+id = 1695130298040427986
+name = "0006_monitor_groups.sql"
+snapshot_name = "0006_snapshot.toml"
+
+[[migrations]]
+id = 2475517208457373399
+name = "0007_page_look.sql"
+snapshot_name = "0007_snapshot.toml"

@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    services:
+      # Same port as local development, so mise.toml's env works unchanged.
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+      # Lets mise install cargo tools (nextest, llvm-cov) as prebuilt binaries.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-binstall
+      - uses: jdx/mise-action@v3
+      - run: mise run lint
+      - run: mise run test
+      - run: mise run test:doc
+
+  turso:
+    name: Turso Cloud integration
+    needs: check
+    # Only reviewed code on master receives the database token. Skipped (step
+    # by step) when the repository has no Turso test secrets, e.g. in forks.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: turso-test-${{ github.repository }}
+      cancel-in-progress: false
+    env:
+      UPTIMESTATUS_TURSO_TEST_URL: ${{ secrets.UPTIMESTATUS_TURSO_TEST_URL }}
+      UPTIMESTATUS_TURSO_TEST_AUTH_TOKEN: ${{ secrets.UPTIMESTATUS_TURSO_TEST_AUTH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+        if: env.UPTIMESTATUS_TURSO_TEST_URL != ''
+      - uses: Swatinem/rust-cache@v2
+        if: env.UPTIMESTATUS_TURSO_TEST_URL != ''
+      - name: Exercise the remote Turso driver
+        if: env.UPTIMESTATUS_TURSO_TEST_URL != ''
+        run: cargo test -p uptime-store --test portable remote_turso_backend -- --ignored --exact
+
+  docker:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

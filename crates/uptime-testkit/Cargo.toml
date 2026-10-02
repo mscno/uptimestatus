@@ -1,0 +1,23 @@
+[package]
+name = "uptime-testkit"
+description = "Test support: a fresh, migrated Postgres database per test."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+hickory-resolver.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "net"] }
+tokio-postgres.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+uptime-store.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

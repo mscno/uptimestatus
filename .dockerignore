@@ -1,0 +1,5 @@
+target
+coverage
+.git
+.env
+*.profraw

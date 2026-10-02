@@ -1,0 +1,69 @@
+# Example monitors for local development: `mise run seed`.
+# Each [[monitor]] is a MonitorSpec; unknown keys are rejected.
+
+[[monitor]]
+key = "example"
+name = "example.com"
+[monitor.check]
+type = "http"
+url = "https://example.com/"
+[monitor.policy]
+interval = "30s"
+retries = 1
+retry_interval = "10s"
+degraded_after = "2s"
+
+[[monitor]]
+key = "github-api"
+name = "GitHub API"
+[monitor.check]
+type = "http"
+url = "https://api.github.com/zen"
+[monitor.policy]
+interval = "60s"
+
+# "Must be forbidden": an endpoint that should refuse anonymous access.
+[[monitor]]
+key = "github-user-forbidden"
+name = "GitHub /user needs auth"
+[monitor.check]
+type = "http"
+url = "https://api.github.com/user"
+accepted_status = "401,403"
+[monitor.policy]
+interval = "60s"
+
+[[monitor]]
+key = "cloudflare-dns"
+name = "Cloudflare DNS over TCP"
+check = { type = "tcp", host = "one.one.one.one", port = 53 }
+
+# Upside-down: SSH must NOT be reachable from the internet. UP means the
+# connection failed. (Private/reserved addresses are blocked by the address
+# policy, and a blocked check is never inverted into success.)
+[[monitor]]
+key = "no-public-ssh"
+name = "example.com has no public SSH"
+check = { type = "tcp", host = "example.com", port = 22 }
+policy = { interval = "60s", timeout = "3s", invert = true }
+
+# A status page for some of the monitors above (`uptimestatus export` writes
+# this format too).
+[[page]]
+slug = "platform"
+title = "Acme Platform"
+description = "Public services and APIs"
+# Styling (all optional): accent = "#4f46e5"; theme = "auto" | "light" | "dark";
+# look = "pixel" (the 8-bit look, default) | "clean" (plain fonts, no starfield).
+look = "pixel"
+
+[[page.section]]
+name = "Core services"
+components = [
+  { monitor = "example", label = "Website" },
+  { monitor = "github-api", label = "GitHub API" },
+]
+
+[[page.section]]
+name = "Infrastructure"
+components = [{ monitor = "cloudflare-dns", label = "DNS" }]

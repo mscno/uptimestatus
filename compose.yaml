@@ -1,0 +1,17 @@
+# Single instance with SQLite on a named volume.
+#   cp .env.example .env   (fill in the GitHub OAuth app and cookie key)
+#   docker compose up --build
+services:
+  uptimestatus:
+    build: .
+    command: ["serve", "--migrate"]
+    env_file: .env
+    ports:
+      - "8080:8080"
+    # Port 9090 (/healthz, /readyz) is deliberately not published.
+    volumes:
+      - data:/data
+    restart: unless-stopped
+
+volumes:
+  data:

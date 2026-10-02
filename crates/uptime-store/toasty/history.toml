@@ -1,0 +1,126 @@
+version = 1
+
+[[migrations]]
+id = 5610696201412119340
+name = "0000_init.sql"
+snapshot_name = "0000_snapshot.toml"
+
+[[migrations]]
+id = 7482014935326571201
+name = "0001_integrity_and_history_index.sql"
+snapshot_name = "0000_snapshot.toml"
+
+[[migrations]]
+id = 6823220734660643174
+name = "0002_admin_auth.sql"
+snapshot_name = "0002_snapshot.toml"
+
+[[migrations]]
+id = 3918273645506172839
+name = "0003_session_user_fk.sql"
+snapshot_name = "0002_snapshot.toml"
+
+[[migrations]]
+id = 9011226191439041275
+name = "0004_status_pages.sql"
+snapshot_name = "0004_snapshot.toml"
+
+[[migrations]]
+id = 6120394857361029485
+name = "0005_page_integrity.sql"
+snapshot_name = "0004_snapshot.toml"
+
+[[migrations]]
+id = 5773281948260956146
+name = "0006_custom_domains.sql"
+snapshot_name = "0006_snapshot.toml"
+
+[[migrations]]
+id = 2468013579864209753
+name = "0007_domain_integrity.sql"
+snapshot_name = "0006_snapshot.toml"
+
+[[migrations]]
+id = 6687930452039692455
+name = "0008_notifications.sql"
+snapshot_name = "0008_snapshot.toml"
+
+[[migrations]]
+id = 7355608123948712604
+name = "0009_notification_integrity.sql"
+snapshot_name = "0008_snapshot.toml"
+
+[[migrations]]
+id = 7338069173245980226
+name = "0010_maintenance.sql"
+snapshot_name = "0010_snapshot.toml"
+
+[[migrations]]
+id = 4402918375561294108
+name = "0011_maintenance_integrity.sql"
+snapshot_name = "0010_snapshot.toml"
+
+[[migrations]]
+id = 7349404267759081826
+name = "0012_incidents.sql"
+snapshot_name = "0012_snapshot.toml"
+
+[[migrations]]
+id = 1150347779235012986
+name = "0013_incident_integrity.sql"
+snapshot_name = "0012_snapshot.toml"
+
+[[migrations]]
+id = 5251086141690844849
+name = "0014_push_heartbeats.sql"
+snapshot_name = "0014_snapshot.toml"
+
+[[migrations]]
+id = 2432365841359089375
+name = "0015_certificate_expiry.sql"
+snapshot_name = "0015_snapshot.toml"
+
+[[migrations]]
+id = 331536698604372910
+name = "0016_page_website_and_images.sql"
+snapshot_name = "0016_snapshot.toml"
+
+[[migrations]]
+id = 8130577212990534617
+name = "0017_check_results_by_time.sql"
+snapshot_name = "0016_snapshot.toml"
+
+[[migrations]]
+id = 1042098476743446301
+name = "0018_portable_json.sql"
+snapshot_name = "0018_snapshot.toml"
+
+[[migrations]]
+id = 2729013804926896755
+name = "0019_maintenance_repeat.sql"
+snapshot_name = "0019_snapshot.toml"
+
+[[migrations]]
+id = 6500406050336986532
+name = "0020_monitor_tags.sql"
+snapshot_name = "0020_snapshot.toml"
+
+[[migrations]]
+id = 6448026846599592512
+name = "0021_api_tokens.sql"
+snapshot_name = "0021_snapshot.toml"
+
+[[migrations]]
+id = 2394401218422453665
+name = "0022_channel_routing.sql"
+snapshot_name = "0022_snapshot.toml"
+
+[[migrations]]
+id = 8040404695415675801
+name = "0023_monitor_groups.sql"
+snapshot_name = "0023_snapshot.toml"
+
+[[migrations]]
+id = 1845902000777565991
+name = "0024_page_look.sql"
+snapshot_name = "0024_snapshot.toml"

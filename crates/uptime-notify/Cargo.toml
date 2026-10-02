@@ -1,0 +1,29 @@
+[package]
+name = "uptime-notify"
+description = "Renders alerts for Slack, Discord and signed webhooks, and delivers them."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+hex.workspace = true
+hmac.workspace = true
+jiff.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+uptime-domain.workspace = true
+uptime-probe.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+wiremock.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,32 @@
+[package]
+name = "uptime-runtime"
+description = "Background work for uptimestatus: the check scheduler, event bus and heartbeat."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+futures-util.workspace = true
+jiff.workspace = true
+reqwest = { workspace = true, features = ["rustls"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
+tokio-util.workspace = true
+tracing.workspace = true
+uptime-domain.workspace = true
+uptime-notify.workspace = true
+uptime-probe.workspace = true
+uptime-store.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+tokio.workspace = true
+uptime-testkit.workspace = true
+wiremock.workspace = true
+
+[lints]
+workspace = true

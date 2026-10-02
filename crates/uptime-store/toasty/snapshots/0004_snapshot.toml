@@ -1,0 +1,682 @@
+version = 1
+
+[schema]
+
+[[schema.tables]]
+id = 0
+name = "monitor_runtime"
+primary_key = { columns = [{ table = 0, index = 0 }], index = { table = 0, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 0, index = 0 }
+name = "monitor_id"
+ty = "I64"
+storage_ty = { Integer = 8 }
+
+[[schema.tables.columns]]
+id = { table = 0, index = 1 }
+name = "state"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 0, index = 2 }
+name = "consecutive_failures"
+ty = "I32"
+storage_ty = { Integer = 4 }
+
+[[schema.tables.columns]]
+id = { table = 0, index = 3 }
+name = "next_run_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+
+[[schema.tables.columns]]
+id = { table = 0, index = 4 }
+name = "scheduled_for"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 0, index = 5 }
+name = "claimed_by"
+ty = "String"
+storage_ty = "Text"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 0, index = 6 }
+name = "last_checked_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 0, index = 7 }
+name = "last_latency_ms"
+ty = "I64"
+storage_ty = { Integer = 8 }
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 0, index = 8 }
+name = "last_status_code"
+ty = "I32"
+storage_ty = { Integer = 4 }
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 0, index = 9 }
+name = "last_error"
+ty = "String"
+storage_ty = "Text"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 0, index = 10 }
+name = "state_changed_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+nullable = true
+
+[[schema.tables.indices]]
+id = { table = 0, index = 0 }
+name = "index_monitor_runtime_by_monitor_id"
+on = 0
+columns = [{ column = { table = 0, index = 0 }, op = "Eq", scope = "Partition" }]
+unique = true
+primary_key = true
+
+[[schema.tables.indices]]
+id = { table = 0, index = 1 }
+name = "index_monitor_runtime_by_next_run_at"
+on = 0
+columns = [{ column = { table = 0, index = 3 }, op = "Eq", scope = "Partition" }]
+
+[[schema.tables]]
+id = 1
+name = "page_components"
+primary_key = { columns = [{ table = 1, index = 0 }], index = { table = 1, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 1, index = 0 }
+name = "id"
+ty = "I64"
+storage_ty = { Integer = 8 }
+auto_increment = true
+
+[[schema.tables.columns]]
+id = { table = 1, index = 1 }
+name = "section_id"
+ty = "I64"
+storage_ty = { Integer = 8 }
+
+[[schema.tables.columns]]
+id = { table = 1, index = 2 }
+name = "monitor_id"
+ty = "I64"
+storage_ty = { Integer = 8 }
+
+[[schema.tables.columns]]
+id = { table = 1, index = 3 }
+name = "label"
+ty = "String"
+storage_ty = "Text"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 1, index = 4 }
+name = "position"
+ty = "I32"
+storage_ty = { Integer = 4 }
+
+[[schema.tables.indices]]
+id = { table = 1, index = 0 }
+name = "index_page_components_by_id"
+on = 1
+columns = [{ column = { table = 1, index = 0 }, op = "Eq", scope = "Partition" }]
+unique = true
+primary_key = true
+
+[[schema.tables.indices]]
+id = { table = 1, index = 1 }
+name = "index_page_components_by_section_id"
+on = 1
+columns = [{ column = { table = 1, index = 1 }, op = "Eq", scope = "Partition" }]
+
+[[schema.tables.indices]]
+id = { table = 1, index = 2 }
+name = "index_page_components_by_monitor_id"
+on = 1
+columns = [{ column = { table = 1, index = 2 }, op = "Eq", scope = "Partition" }]
+
+[[schema.tables]]
+id = 2
+name = "page_sections"
+primary_key = { columns = [{ table = 2, index = 0 }], index = { table = 2, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 2, index = 0 }
+name = "id"
+ty = "I64"
+storage_ty = { Integer = 8 }
+auto_increment = true
+
+[[schema.tables.columns]]
+id = { table = 2, index = 1 }
+name = "page_id"
+ty = "I64"
+storage_ty = { Integer = 8 }
+
+[[schema.tables.columns]]
+id = { table = 2, index = 2 }
+name = "name"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 2, index = 3 }
+name = "position"
+ty = "I32"
+storage_ty = { Integer = 4 }
+
+[[schema.tables.indices]]
+id = { table = 2, index = 0 }
+name = "index_page_sections_by_id"
+on = 2
+columns = [{ column = { table = 2, index = 0 }, op = "Eq", scope = "Partition" }]
+unique = true
+primary_key = true
+
+[[schema.tables.indices]]
+id = { table = 2, index = 1 }
+name = "index_page_sections_by_page_id"
+on = 2
+columns = [{ column = { table = 2, index = 1 }, op = "Eq", scope = "Partition" }]
+
+[[schema.tables]]
+id = 3
+name = "status_pages"
+primary_key = { columns = [{ table = 3, index = 0 }], index = { table = 3, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 3, index = 0 }
+name = "id"
+ty = "I64"
+storage_ty = { Integer = 8 }
+auto_increment = true
+
+[[schema.tables.columns]]
+id = { table = 3, index = 1 }
+name = "slug"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 3, index = 2 }
+name = "title"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 3, index = 3 }
+name = "description"
+ty = "String"
+storage_ty = "Text"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 3, index = 4 }
+name = "accent"
+ty = "String"
+storage_ty = "Text"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 3, index = 5 }
+name = "theme"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 3, index = 6 }
+name = "published"
+ty = "Bool"
+storage_ty = "Boolean"
+
+[[schema.tables.columns]]
+id = { table = 3, index = 7 }
+name = "created_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+
+[[schema.tables.columns]]
+id = { table = 3, index = 8 }
+name = "updated_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+
+[[schema.tables.indices]]
+id = { table = 3, index = 0 }
+name = "index_status_pages_by_id"
+on = 3
+columns = [{ column = { table = 3, index = 0 }, op = "Eq", scope = "Partition" }]
+unique = true
+primary_key = true
+
+[[schema.tables.indices]]
+id = { table = 3, index = 1 }
+name = "index_status_pages_by_slug"
+on = 3
+columns = [{ column = { table = 3, index = 1 }, op = "Eq", scope = "Partition" }]
+unique = true
+
+[[schema.tables]]
+id = 4
+name = "sessions"
+primary_key = { columns = [{ table = 4, index = 0 }], index = { table = 4, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 4, index = 0 }
+name = "token_hash"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 4, index = 1 }
+name = "user_id"
+ty = "I64"
+storage_ty = { Integer = 8 }
+
+[[schema.tables.columns]]
+id = { table = 4, index = 2 }
+name = "created_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+
+[[schema.tables.columns]]
+id = { table = 4, index = 3 }
+name = "expires_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+
+[[schema.tables.columns]]
+id = { table = 4, index = 4 }
+name = "last_seen_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+
+[[schema.tables.columns]]
+id = { table = 4, index = 5 }
+name = "user_agent"
+ty = "String"
+storage_ty = "Text"
+nullable = true
+
+[[schema.tables.indices]]
+id = { table = 4, index = 0 }
+name = "index_sessions_by_token_hash"
+on = 4
+columns = [{ column = { table = 4, index = 0 }, op = "Eq", scope = "Partition" }]
+unique = true
+primary_key = true
+
+[[schema.tables.indices]]
+id = { table = 4, index = 1 }
+name = "index_sessions_by_user_id"
+on = 4
+columns = [{ column = { table = 4, index = 1 }, op = "Eq", scope = "Partition" }]
+
+[[schema.tables.indices]]
+id = { table = 4, index = 2 }
+name = "index_sessions_by_expires_at"
+on = 4
+columns = [{ column = { table = 4, index = 3 }, op = "Eq", scope = "Partition" }]
+
+[[schema.tables]]
+id = 5
+name = "admin_users"
+primary_key = { columns = [{ table = 5, index = 0 }], index = { table = 5, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 5, index = 0 }
+name = "id"
+ty = "I64"
+storage_ty = { Integer = 8 }
+auto_increment = true
+
+[[schema.tables.columns]]
+id = { table = 5, index = 1 }
+name = "github_id"
+ty = "I64"
+storage_ty = { Integer = 8 }
+
+[[schema.tables.columns]]
+id = { table = 5, index = 2 }
+name = "login"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 5, index = 3 }
+name = "name"
+ty = "String"
+storage_ty = "Text"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 5, index = 4 }
+name = "avatar_url"
+ty = "String"
+storage_ty = "Text"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 5, index = 5 }
+name = "created_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+
+[[schema.tables.columns]]
+id = { table = 5, index = 6 }
+name = "last_login_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+
+[[schema.tables.indices]]
+id = { table = 5, index = 0 }
+name = "index_admin_users_by_id"
+on = 5
+columns = [{ column = { table = 5, index = 0 }, op = "Eq", scope = "Partition" }]
+unique = true
+primary_key = true
+
+[[schema.tables.indices]]
+id = { table = 5, index = 1 }
+name = "index_admin_users_by_github_id"
+on = 5
+columns = [{ column = { table = 5, index = 1 }, op = "Eq", scope = "Partition" }]
+unique = true
+
+[[schema.tables.indices]]
+id = { table = 5, index = 2 }
+name = "index_admin_users_by_login"
+on = 5
+columns = [{ column = { table = 5, index = 2 }, op = "Eq", scope = "Partition" }]
+unique = true
+
+[[schema.tables]]
+id = 6
+name = "monitor_daily"
+primary_key = { columns = [{ table = 6, index = 0 }, { table = 6, index = 1 }], index = { table = 6, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 6, index = 0 }
+name = "monitor_id"
+ty = "I64"
+storage_ty = { Integer = 8 }
+
+[[schema.tables.columns]]
+id = { table = 6, index = 1 }
+name = "day"
+ty = "Date"
+storage_ty = "Date"
+
+[[schema.tables.columns]]
+id = { table = 6, index = 2 }
+name = "total"
+ty = "I64"
+storage_ty = { Integer = 8 }
+
+[[schema.tables.columns]]
+id = { table = 6, index = 3 }
+name = "up"
+ty = "I64"
+storage_ty = { Integer = 8 }
+
+[[schema.tables.columns]]
+id = { table = 6, index = 4 }
+name = "degraded"
+ty = "I64"
+storage_ty = { Integer = 8 }
+
+[[schema.tables.columns]]
+id = { table = 6, index = 5 }
+name = "pending"
+ty = "I64"
+storage_ty = { Integer = 8 }
+
+[[schema.tables.columns]]
+id = { table = 6, index = 6 }
+name = "down"
+ty = "I64"
+storage_ty = { Integer = 8 }
+
+[[schema.tables.columns]]
+id = { table = 6, index = 7 }
+name = "maintenance"
+ty = "I64"
+storage_ty = { Integer = 8 }
+
+[[schema.tables.columns]]
+id = { table = 6, index = 8 }
+name = "latency_sum_ms"
+ty = "I64"
+storage_ty = { Integer = 8 }
+
+[[schema.tables.columns]]
+id = { table = 6, index = 9 }
+name = "latency_count"
+ty = "I64"
+storage_ty = { Integer = 8 }
+
+[[schema.tables.columns]]
+id = { table = 6, index = 10 }
+name = "latency_max_ms"
+ty = "I64"
+storage_ty = { Integer = 8 }
+
+[[schema.tables.indices]]
+id = { table = 6, index = 0 }
+name = "index_monitor_daily_by_monitor_id_and_day"
+on = 6
+columns = [{ column = { table = 6, index = 0 }, op = "Eq", scope = "Partition" }, { column = { table = 6, index = 1 }, op = "Eq", scope = "Local" }]
+unique = true
+primary_key = true
+
+[[schema.tables]]
+id = 7
+name = "check_results"
+primary_key = { columns = [{ table = 7, index = 0 }], index = { table = 7, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 7, index = 0 }
+name = "id"
+ty = "I64"
+storage_ty = { Integer = 8 }
+auto_increment = true
+
+[[schema.tables.columns]]
+id = { table = 7, index = 1 }
+name = "monitor_id"
+ty = "I64"
+storage_ty = { Integer = 8 }
+
+[[schema.tables.columns]]
+id = { table = 7, index = 2 }
+name = "scheduled_for"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+
+[[schema.tables.columns]]
+id = { table = 7, index = 3 }
+name = "checked_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+
+[[schema.tables.columns]]
+id = { table = 7, index = 4 }
+name = "health"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 7, index = 5 }
+name = "state_after"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 7, index = 6 }
+name = "latency_ms"
+ty = "I64"
+storage_ty = { Integer = 8 }
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 7, index = 7 }
+name = "status_code"
+ty = "I32"
+storage_ty = { Integer = 4 }
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 7, index = 8 }
+name = "error_kind"
+ty = "String"
+storage_ty = "Text"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 7, index = 9 }
+name = "error"
+ty = "String"
+storage_ty = "Text"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 7, index = 10 }
+name = "region"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.indices]]
+id = { table = 7, index = 0 }
+name = "index_check_results_by_id"
+on = 7
+columns = [{ column = { table = 7, index = 0 }, op = "Eq", scope = "Partition" }]
+unique = true
+primary_key = true
+
+[[schema.tables.indices]]
+id = { table = 7, index = 1 }
+name = "index_check_results_by_checked_at"
+on = 7
+columns = [{ column = { table = 7, index = 3 }, op = "Eq", scope = "Partition" }]
+
+[[schema.tables]]
+id = 8
+name = "monitors"
+primary_key = { columns = [{ table = 8, index = 0 }], index = { table = 8, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 8, index = 0 }
+name = "id"
+ty = "I64"
+storage_ty = { Integer = 8 }
+auto_increment = true
+
+[[schema.tables.columns]]
+id = { table = 8, index = 1 }
+name = "key"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 8, index = 2 }
+name = "name"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 8, index = 3 }
+name = "check"
+ty = "String"
+storage_ty = "Jsonb"
+
+[[schema.tables.columns]]
+id = { table = 8, index = 4 }
+name = "interval_ms"
+ty = "I64"
+storage_ty = { Integer = 8 }
+
+[[schema.tables.columns]]
+id = { table = 8, index = 5 }
+name = "retry_interval_ms"
+ty = "I64"
+storage_ty = { Integer = 8 }
+
+[[schema.tables.columns]]
+id = { table = 8, index = 6 }
+name = "timeout_ms"
+ty = "I64"
+storage_ty = { Integer = 8 }
+
+[[schema.tables.columns]]
+id = { table = 8, index = 7 }
+name = "retries"
+ty = "I32"
+storage_ty = { Integer = 4 }
+
+[[schema.tables.columns]]
+id = { table = 8, index = 8 }
+name = "invert"
+ty = "Bool"
+storage_ty = "Boolean"
+
+[[schema.tables.columns]]
+id = { table = 8, index = 9 }
+name = "degraded_after_ms"
+ty = "I64"
+storage_ty = { Integer = 8 }
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 8, index = 10 }
+name = "resend_every"
+ty = "I32"
+storage_ty = { Integer = 4 }
+
+[[schema.tables.columns]]
+id = { table = 8, index = 11 }
+name = "active"
+ty = "Bool"
+storage_ty = "Boolean"
+
+[[schema.tables.columns]]
+id = { table = 8, index = 12 }
+name = "created_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+
+[[schema.tables.columns]]
+id = { table = 8, index = 13 }
+name = "updated_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+
+[[schema.tables.indices]]
+id = { table = 8, index = 0 }
+name = "index_monitors_by_id"
+on = 8
+columns = [{ column = { table = 8, index = 0 }, op = "Eq", scope = "Partition" }]
+unique = true
+primary_key = true
+
+[[schema.tables.indices]]
+id = { table = 8, index = 1 }
+name = "index_monitors_by_key"
+on = 8
+columns = [{ column = { table = 8, index = 1 }, op = "Eq", scope = "Partition" }]
+unique = true

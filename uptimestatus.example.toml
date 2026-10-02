@@ -1,0 +1,57 @@
+# Example configuration. Copy to `uptimestatus.toml` (read from the working
+# directory) or point UPTIMESTATUS_CONFIG at any path. Every key can also be set as
+# an environment variable: UPTIMESTATUS_<SECTION>__<KEY>, e.g. UPTIMESTATUS_HTTP__PORT.
+# Environment variables win over this file. Unknown keys are rejected at startup.
+#
+# Keep secrets (database_url, OAuth secret, cookie key) in the environment or in a
+# file that is not committed.
+
+# Public URL of the admin console. Its host serves the console and /s/<slug> pages.
+app_url = "https://status.example.com"
+# The hostname custom status-page domains CNAME to. Requests for it redirect to the console.
+edge_host = "edge.example.com"
+
+# SQLite on a persistent volume. Other options:
+#   PostgreSQL: postgres://user:pass@host:5432/db?sslmode=require   (backend = "postgres")
+#   Turso:      libsql://your-db.turso.io + database.auth_token     (backend = "turso")
+database_url = "sqlite:/data/uptimestatus.db"
+
+[database]
+backend = "sqlite"   # postgres (default) | sqlite | turso; must match the URL scheme
+# max_connections = 8    # PostgreSQL pool size; SQLite and Turso use one connection
+# auth_token = "..."     # Turso Cloud only
+
+[http]
+host = "::"            # bind address (:: = IPv4 and IPv6)
+port = 8080            # public listener
+internal_port = 9090   # /healthz and /readyz; do not expose publicly
+
+[log]
+format = "json"        # json | pretty
+# filter = "info"      # tracing directives; RUST_LOG wins
+
+[auth]
+admins = "your-github-username,another-admin"   # GitHub usernames allowed to sign in
+github_client_id = "..."
+github_client_secret = "..."   # OAuth app callback: <app_url>/auth/github/callback
+# cookie_key = "..."           # base64 of >= 64 random bytes: openssl rand -base64 64
+# session_idle = "7days"
+# session_max_age = "30days"
+
+[checks]
+enabled = true         # run the scheduler in this process
+concurrency = 32
+poll_interval = "1s"
+retention = "90days"   # raw check results and finished alert deliveries
+# heartbeat_url = "https://hc-ping.com/your-uuid"   # dead-man switch
+# region = "eu"                                     # label stored with results
+
+[domains]
+verify = true
+# edge_ips = ["203.0.113.10", "2001:db8::10"]   # shown for apex custom domains
+# verify_every = "5m"
+# recheck_after = "24h"
+# prewarm_tls = true
+
+[storage]
+path = "/data"         # uploaded logos and favicons; uploads are off when unset

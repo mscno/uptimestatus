@@ -1,0 +1,48 @@
+[package]
+name = "uptime-web"
+description = "HTTP surface of uptimestatus: host routing, internal endpoints and Topcoat pages."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+axum.workspace = true
+base64.workspace = true
+futures-util.workspace = true
+getrandom.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "macros"] }
+humantime.workspace = true
+include_dir.workspace = true
+jiff.workspace = true
+http.workspace = true
+reqwest = { workspace = true, features = ["rustls", "form", "json"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+topcoat.workspace = true
+tower.workspace = true
+tracing.workspace = true
+uptime-domain.workspace = true
+uptime-notify.workspace = true
+uptime-probe.workspace = true
+uptime-runtime.workspace = true
+uptime-store.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+http-body-util.workspace = true
+tokio-postgres.workspace = true
+pretty_assertions.workspace = true
+rstest.workspace = true
+serde_json.workspace = true
+serde_urlencoded = "0.7"
+wiremock.workspace = true
+tokio.workspace = true
+uptime-testkit.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,97 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/mscno/uptimestatus"
+
+[workspace.dependencies]
+# Internal crates
+uptime-domain = { path = "crates/uptime-domain" }
+uptime-notify = { path = "crates/uptime-notify" }
+uptime-probe = { path = "crates/uptime-probe" }
+uptime-runtime = { path = "crates/uptime-runtime" }
+uptime-store = { path = "crates/uptime-store" }
+uptime-testkit = { path = "crates/uptime-testkit" }
+uptime-web = { path = "crates/uptime-web" }
+
+# Web
+axum = "0.8.9"
+http = "1.5.0"
+include_dir = "0.7.4"
+http-body-util = "0.1.5"
+tower = { version = "0.5.3", features = ["util"] }
+topcoat = { version = "=0.9.0", features = ["datastar", "tower", "multipart"] }
+
+# Probing
+hickory-resolver = "0.26.3"
+reqwest = { version = "0.13.5", default-features = false }
+rustls = { version = "0.23", default-features = false }
+
+# Persistence
+toasty = { version = "=0.11.0", features = ["postgresql", "sqlite", "turso-serverless", "jiff", "migration", "serde"] }
+toasty-core = "=0.11.0"
+toasty-driver-turso = { version = "=0.11.0", features = ["serverless"] }
+toasty-cli = "=0.11.0"
+tokio-postgres = "0.7.18"
+tokio-postgres-rustls = "0.14.0"
+rustls-platform-verifier = "0.7.1"
+
+# Crypto and encoding (OAuth state, PKCE, cookie keys)
+base64 = "0.23.1"
+getrandom = "0.4.3"
+sha2 = "0.11.0"
+hmac = "0.13.0"
+hex = "0.4.3"
+
+# Runtime, config, telemetry, errors
+anyhow = "1.0.104"
+futures-util = "0.3.34"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+humantime = "2.3.0"
+humantime-serde = "1.1.1"
+figment = { version = "0.10.19", features = ["env", "toml"] }
+jiff = { version = "0.2.37", features = ["serde"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+toml = "1.1.6"
+thiserror = "2.0.21"
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+tokio-util = "0.7.19"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+url = { version = "2.5.8", features = ["serde"] }
+uuid = { version = "1.26.1", features = ["v4"] }
+
+# Testing
+pretty_assertions = "1.4.1"
+rcgen = "0.14.10"
+tokio-rustls = { version = "0.26.6", default-features = false }
+wiremock = "0.6.5"
+rstest = "0.27.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+print_stdout = "warn"
+
+# Smaller, faster dev builds: line tables are enough for backtraces, and
+# dependencies need no debug info (keeps target/ from growing into tens of GB).
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

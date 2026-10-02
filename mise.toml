@@ -1,0 +1,115 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+# Developer tasks for uptimestatus. `mise tasks` lists them; `mise run <task>` runs one.
+
+[tools]
+"cargo:cargo-nextest" = "latest"
+"cargo:cargo-llvm-cov" = "latest"
+
+[env]
+# Local Postgres server used for both dev and tests (separate databases). Tests
+# create a fresh database per test from a migrated template on this server.
+PG_ADMIN_URL = "postgres://postgres:postgres@localhost:5433/postgres"
+DEV_DB_NAME = "uptimestatus_dev"
+DATABASE_URL = "postgres://postgres:postgres@localhost:5433/uptimestatus_dev"
+UPTIMESTATUS_APP_URL = "http://localhost:8080"
+UPTIMESTATUS_EDGE_HOST = "edge.localhost"
+UPTIMESTATUS_LOG__FORMAT = "pretty"
+# Local sign-in without GitHub (debug builds only). Add your GitHub username to
+# ADMINS and GitHub OAuth app credentials in .env to test the real flow.
+UPTIMESTATUS_AUTH__ADMINS = "dev"
+UPTIMESTATUS_AUTH__DEV_LOGIN = "dev"
+# No edge runs locally: skip the HTTPS certificate pre-warm for custom domains.
+UPTIMESTATUS_DOMAINS__PREWARM_TLS = "false"
+# Uploaded logos and favicons (gitignored).
+UPTIMESTATUS_STORAGE__PATH = "{{config_root}}/data"
+RUST_LOG = "info,uptime=debug,uptimestatus=debug,tokio_postgres=warn"
+# Optional per-developer overrides (not committed).
+_.file = { path = ".env", redact = false }
+
+# ── Database ────────────────────────────────────────────────────────────
+
+[tasks."db:create"]
+description = "Create the dev database if it does not exist"
+run = '''
+psql "$PG_ADMIN_URL" -v ON_ERROR_STOP=1 -qtAc "SELECT 1 FROM pg_database WHERE datname = '$DEV_DB_NAME'" | grep -q 1 \
+  || psql "$PG_ADMIN_URL" -v ON_ERROR_STOP=1 -qc "CREATE DATABASE \"$DEV_DB_NAME\""
+echo "database $DEV_DB_NAME ready"
+'''
+
+[tasks."db:drop"]
+description = "Drop the dev database (terminates open connections)"
+run = 'psql "$PG_ADMIN_URL" -v ON_ERROR_STOP=1 -qc "DROP DATABASE IF EXISTS \"$DEV_DB_NAME\" WITH (FORCE)"'
+
+[tasks."db:migrate"]
+description = "Apply pending migrations to the dev database"
+run = "cargo run -q -p uptime-server -- migrate"
+
+[tasks."db:reset"]
+description = "Drop, recreate and migrate the dev database"
+run = [
+  "mise run db:drop",
+  "mise run db:create",
+  "mise run db:migrate",
+]
+
+[tasks."db:migration:new"]
+description = "Generate a migration from model changes: mise run db:migration:new <name>"
+usage = 'arg "<name>" help="Short snake_case name, e.g. add_incidents"'
+run = "cargo run -q -p uptime-store --features cli --bin toasty -- migration generate --name ${usage_name?}"
+
+[tasks."db:psql"]
+description = "Open psql on the dev database"
+run = 'psql "$DATABASE_URL"'
+
+[tasks."db:test:clean"]
+description = "Drop leftover per-test databases and migration templates"
+run = '''
+psql "$PG_ADMIN_URL" -v ON_ERROR_STOP=1 -qtAc \
+  "SELECT format('DROP DATABASE IF EXISTS %I WITH (FORCE);', datname) FROM pg_database
+   WHERE datname LIKE 'uptimestatus\_test\_%' OR datname LIKE 'uptimestatus\_tpl\_%'" \
+  | psql "$PG_ADMIN_URL" -v ON_ERROR_STOP=1 -q
+echo "test databases dropped"
+'''
+
+[tasks.seed]
+description = "Create monitors from a TOML file (default: seed/monitors.example.toml)"
+usage = 'arg "[file]" default="seed/monitors.example.toml"'
+run = "cargo run -q -p uptime-server -- seed ${usage_file?}"
+
+# ── Build, run, test ────────────────────────────────────────────────────
+
+[tasks.dev]
+description = "Migrate the dev database and run the server"
+depends = ["db:create"]
+run = "cargo run -p uptime-server -- serve --migrate"
+
+[tasks.test]
+description = "Run the whole test suite (unit + real-Postgres integration tests)"
+run = "cargo nextest run --workspace --all-targets"
+
+[tasks."test:doc"]
+description = "Run doctests (nextest does not run them)"
+run = "cargo test --workspace --doc"
+
+[tasks.cov]
+description = "Test coverage report (HTML in target/llvm-cov/html)"
+run = [
+  "rustup component add llvm-tools-preview",
+  "cargo llvm-cov nextest --workspace --all-targets --html",
+  "cargo llvm-cov report --summary-only",
+]
+
+[tasks.fmt]
+description = "Format the workspace"
+run = "cargo fmt --all"
+
+[tasks.lint]
+description = "Check formatting and run clippy with warnings as errors"
+run = [
+  "cargo fmt --all --check",
+  "cargo clippy --workspace --all-targets -- -D warnings",
+]
+
+[tasks.ci]
+description = "Everything CI runs"
+run = ["mise run lint", "mise run test", "mise run test:doc"]

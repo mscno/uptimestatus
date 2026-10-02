@@ -1,0 +1,11 @@
+/target
+/coverage
+*.profraw
+.env
+.DS_Store
+
+# Local uploads (UPTIMESTATUS_STORAGE__PATH)
+/data
+
+# Local config file (see uptimestatus.example.toml)
+/uptimestatus.toml

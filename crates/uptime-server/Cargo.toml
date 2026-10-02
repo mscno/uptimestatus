@@ -1,0 +1,46 @@
+[package]
+name = "uptime-server"
+description = "The uptimestatus binary: configuration, telemetry, CLI and process wiring."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "uptimestatus"
+path = "src/main.rs"
+
+[dependencies]
+getrandom.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+base64.workspace = true
+clap.workspace = true
+figment.workspace = true
+humantime-serde.workspace = true
+jiff.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uptime-domain.workspace = true
+uptime-notify.workspace = true
+uptime-probe.workspace = true
+uptime-runtime.workspace = true
+uptime-store.workspace = true
+uptime-web.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+figment = { workspace = true, features = ["test"] }
+pretty_assertions.workspace = true
+reqwest.workspace = true
+wiremock.workspace = true
+uptime-testkit.workspace = true
+
+[lints]
+workspace = true

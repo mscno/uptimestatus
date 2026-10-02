@@ -1,33 +1,50 @@
 # uptimestatus
 
-Self-hosted uptime monitoring and status pages, in one Rust binary. Checks HTTP(S), TCP, DNS
-and push heartbeats, alerts to Slack, Discord and webhooks, and publishes status pages
-(with custom domains). Runs on PostgreSQL, SQLite or Turso.
+A self-hosted uptime monitor and status page app, written in Rust. It's an open-source
+hobby project for keeping an eye on a small collection of services. Run it as one binary
+or a Docker container, with SQLite, PostgreSQL or Turso for storage.
 
-- **Monitors:** HTTP(S) (status ranges, keyword, redirects, certificate-expiry warnings), TCP
-  (optionally over TLS with certificate expiry, or send/expect for Redis, SMTP, SSH, ...),
-  DNS (record type, expected answer) and push heartbeats (`/api/push/<token>`), with Uptime
-  Kuma-style interval, retries, retry interval, timeout and upside-down mode.
-- **Alerts:** Slack, Discord and signed webhooks through a database outbox with retries; per
-  channel routing: escalation delay ("only if down for N minutes"), UTC quiet hours and muted
-  events.
-- **Status pages:** 90-day bars, incidents with timelines, maintenance windows, custom domains
-  with automatic HTTPS, `summary.json`.
-- **Console:** GitHub sign-in for an allowlist, live dashboard and monitor pages (new checks
-  stream in over SSE), "Test now", edit/duplicate, page editor, and TOML import/export
-  (`uptimestatus seed` / `export`).
-- **Live status pages:** they re-render as soon as one of their monitors is checked; times show
-  the exact moment in the visitor's time zone on hover.
-- **Feeds and charts:** an Atom feed per status page (`/s/<slug>/feed.atom`), response-time
-  charts (median and p95, hover for the figures at each point) and 24h/7d/30d/90d uptime on the console and status pages.
-- **HTTP checks:** custom method, headers and body, basic/bearer auth, JSON-path assertions
-  (`data.status = ok`), keyword rules, TLS-error opt-out and certificate-expiry warnings.
-- **Maintenance:** one-off or daily/weekly recurring windows (UTC), suppressing alerts.
-- **Console at scale:** tags, slash-separated groups (`prod/eu`) shown as a tree whose nodes
-  summarise their worst child, search, tag filters and bulk pause/resume/delete/tag.
-- **JSON API:** `/api/v1` with bearer tokens (see below).
-- **UI:** [Starbase](https://starbase.zweiundeins.gmbh/) Rocket components and design tokens,
-  vendored under `crates/uptime-web/static/starbase/` (MIT; fonts OFL).
+![PrivateNPM status page, using the pixel theme](docs/screenshot.png)
+
+## Features
+
+- HTTP(S), TCP, DNS and push heartbeat monitors, with configurable timeouts and retries.
+  HTTP checks support status ranges, keywords, JSON assertions, custom requests and auth;
+  TCP checks can use TLS and send/expect rules.
+- Automatic incidents after confirmed failures, with at least two failed attempts. New
+  monitors retry once by default. Recovery resolves the incident; the admin timeline keeps
+  errors, statuses and response excerpts, including the original attempt and retries.
+- Public status pages with current and previous incidents, 90-day uptime bars, response-time
+  charts, Atom feeds, custom domains, logos and a choice of pixel or clean styling.
+- Slack, Discord and signed webhook alerts, with retries, quiet hours and escalation delays.
+- TLS certificate-expiry warnings and one-off or recurring maintenance windows.
+- A live admin console with GitHub sign-in, tags, groups, search, bulk actions and "Test now".
+  Status pages and the console update over SSE when checks finish.
+- A [JSON API](#json-api) and TOML import/export for monitors and pages.
+
+## Quick start
+
+You need a GitHub OAuth app for the admin console (Settings → Developer settings → OAuth
+apps; callback URL `<APP_URL>/auth/github/callback`, e.g. `http://localhost:8080/auth/github/callback`).
+
+```sh
+cp .env.example .env      # set UPTIMESTATUS_AUTH__ADMINS, GITHUB_CLIENT_ID/SECRET, COOKIE_KEY
+docker compose up --build # SQLite on a named volume, http://localhost:8080
+```
+
+That is a single instance with SQLite: no database server to run. To use PostgreSQL or Turso
+instead, change `DATABASE_URL` (see [Databases](#databases)). Without Docker:
+
+```sh
+cargo build --release -p uptime-server      # target/release/uptimestatus
+DATABASE_URL=sqlite:./uptimestatus.db UPTIMESTATUS_DATABASE__BACKEND=sqlite \
+UPTIMESTATUS_APP_URL=http://localhost:8080 UPTIMESTATUS_EDGE_HOST=edge.localhost \
+UPTIMESTATUS_AUTH__ADMINS=you UPTIMESTATUS_AUTH__GITHUB_CLIENT_ID=... UPTIMESTATUS_AUTH__GITHUB_CLIENT_SECRET=... \
+  target/release/uptimestatus serve --migrate
+```
+
+`serve --migrate` applies pending migrations before starting. For upgrades, you can also
+run `uptimestatus migrate` separately, then start `serve`.
 
 ## JSON API
 
@@ -53,30 +70,6 @@ curl -X PUT https://status.example.com/api/v1/monitors/api \
   -d '{"name": "API", "check": {"type": "http", "url": "https://api.example.com/health"}, "tags": ["prod"]}'
 ```
 
-## Quick start
-
-You need a GitHub OAuth app for the admin console (Settings → Developer settings → OAuth
-apps; callback URL `<APP_URL>/auth/github/callback`, e.g. `http://localhost:8080/auth/github/callback`).
-
-```sh
-cp .env.example .env      # set UPTIMESTATUS_AUTH__ADMINS, GITHUB_CLIENT_ID/SECRET, COOKIE_KEY
-docker compose up --build # SQLite on a named volume, http://localhost:8080
-```
-
-That is a single instance with SQLite: no database server to run. To use PostgreSQL or Turso
-instead, change `DATABASE_URL` (see [Databases](#databases)). Without Docker:
-
-```sh
-cargo build --release -p uptime-server      # target/release/uptimestatus
-DATABASE_URL=sqlite:./uptimestatus.db UPTIMESTATUS_DATABASE__BACKEND=sqlite \
-UPTIMESTATUS_APP_URL=http://localhost:8080 UPTIMESTATUS_EDGE_HOST=edge.localhost \
-UPTIMESTATUS_AUTH__ADMINS=you UPTIMESTATUS_AUTH__GITHUB_CLIENT_ID=... UPTIMESTATUS_AUTH__GITHUB_CLIENT_SECRET=... \
-  target/release/uptimestatus serve --migrate
-```
-
-`serve --migrate` applies pending migrations first; in production run `uptimestatus migrate`
-as a separate release step and `serve` without the flag.
-
 ## Configuration
 
 Settings come from, later winning:
@@ -90,7 +83,7 @@ Settings come from, later winning:
 
 Unknown keys are rejected at startup, so typos fail loudly. Keep secrets (`DATABASE_URL`,
 the OAuth secret, the cookie key, the Turso token) in the environment or an uncommitted file;
-they are never logged. [`.env.example`](.env.example) lists the common ones.
+the configuration logger redacts these secrets. [`.env.example`](.env.example) lists the common ones.
 
 | Variable | Default | |
 |---|---|---|
@@ -154,7 +147,7 @@ Run `uptimestatus migrate` (or `serve --migrate`) before serving. The image incl
 drivers and its `/data` directory is prepared for the unprivileged user; mount a volume there
 for SQLite files and uploaded images. SQLite and Turso run one combined `web,worker` instance;
 PostgreSQL is the backend for separate web and worker instances and multi-instance live
-updates (it uses `LISTEN/NOTIFY`). **MySQL/MariaDB is not supported.**
+updates (it uses `LISTEN/NOTIFY`). The supported backends are PostgreSQL, SQLite and Turso.
 
 A `Turso Cloud integration` CI job runs on pushes to `master` when the repository secrets
 `UPTIMESTATUS_TURSO_TEST_URL` and `UPTIMESTATUS_TURSO_TEST_AUTH_TOKEN` are set (it skips
@@ -174,9 +167,9 @@ otherwise). For a manual run, export those two variables and run
 | `seed file.toml` | Create the monitors and pages in a TOML file; existing keys and slugs are left alone |
 | `export` | Write all monitors and pages as TOML, the format `seed` reads |
 
-Most installs run one `serve`. To scale the web tier separately, run several `--roles web`
-instances plus one or more `--roles worker` against the same PostgreSQL database; they
-coordinate over `LISTEN/NOTIFY`. SQLite and Turso require a single instance with both roles.
+One `serve` process is enough for a small setup. If you want to separate the web app from
+the checks, PostgreSQL supports `--roles web` and `--roles worker` instances sharing a
+database; they coordinate over `LISTEN/NOTIFY`. SQLite and Turso use one instance with both roles.
 `UPTIMESTATUS_CHECKS__ENABLED=false` and `UPTIMESTATUS_DOMAINS__VERIFY=false` turn off pieces
 of the worker role in a process.
 
@@ -235,6 +228,7 @@ admin console. `mise tasks` lists everything: `db:create`, `db:drop`, `db:migrat
 | `uptime-runtime` | The scheduler loop (claim → probe → evaluate → record → publish), the alert sender, domain verification, the cluster bus bridge, the dead-man heartbeat and the retention janitor. |
 | `uptime-web` | HTTP surface: host routing, internal endpoints (`/healthz`, `/readyz`), the push API, Topcoat pages (console and status pages), vendored Starbase assets. |
 | `uptime-server` | The `uptimestatus` binary: config (figment), telemetry (tracing), CLI (clap), process wiring. |
+| `uptime-transfer` | Full database export, validation and restore between PostgreSQL and local Turso; see its [README](crates/uptime-transfer/README.md). |
 | `uptime-testkit` | Test support: a migrated database per test, cloned from a template. |
 
 ## Migrations
@@ -253,10 +247,47 @@ the PostgreSQL history retains its existing upgrade path. To generate the
 SQLite/Turso side of a model change, run the migration command with
 `UPTIMESTATUS_DATABASE__BACKEND=sqlite`; it uses an in-memory SQLite driver.
 
-## License and third-party code
+## Contributing
 
-Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
-Contributions are accepted under the same terms. Vendored: [Datastar](https://data-star.dev) v1.0.4 with Rocket (MIT, under
-`crates/uptime-web/vendor/datastar/`) and [Starbase](https://starbase.zweiundeins.gmbh/)
-components (MIT; Pixelify Sans and JetBrains Mono fonts under the SIL OFL) under
-`crates/uptime-web/static/starbase/`.
+Issues and pull requests are welcome. A bug report with the monitor type, relevant
+configuration (with secrets removed), and steps to reproduce is especially helpful.
+For larger changes, open an issue first so we can discuss the scope.
+
+Before sending a code change, run `mise run lint`, `mise run test` and `mise run test:doc`.
+Schema changes need migrations for both PostgreSQL and SQLite/Turso, as described above.
+
+## Credits
+
+This project depends on the work of many other open-source maintainers. In particular:
+
+| Project | What it provides here |
+|---|---|
+| [Starbase](https://github.com/zweiundeins/starbase), by zwei und eins and its contributors | Rocket web components, design tokens, themes and the starfield. |
+| [Datastar](https://github.com/starfederation/datastar), by Star Federation and its contributors | Browser reactivity and live updates over SSE, including the Rocket runtime used by Starbase. |
+| [Topcoat](https://github.com/tokio-rs/topcoat) | Server-rendered Rust views, routing, forms, cookies and Datastar integration. |
+| [Toasty](https://github.com/tokio-rs/toasty) | Database models, queries, drivers and embedded migrations. |
+| [Tokio](https://github.com/tokio-rs/tokio), [Axum](https://github.com/tokio-rs/axum) and [Tower](https://github.com/tower-rs/tower) | Async runtime, HTTP server and middleware. |
+| [Reqwest](https://github.com/seanmonstar/reqwest), [Rustls](https://github.com/rustls/rustls) and [Hickory DNS](https://github.com/hickory-dns/hickory-dns) | HTTP requests, TLS and DNS checks. |
+| [Jiff](https://github.com/BurntSushi/jiff) and [Serde](https://github.com/serde-rs/serde) | Time handling and serialization. |
+| [Figment](https://github.com/SergioBenitez/Figment), [Clap](https://github.com/clap-rs/clap) and [Tracing](https://github.com/tokio-rs/tracing) | Configuration, command-line parsing and logs. |
+| [Wiremock](https://github.com/LukeMathWalker/wiremock-rs) and [rcgen](https://github.com/rustls/rcgen) | HTTP fixtures and certificates for integration tests. |
+
+The monitoring policies take inspiration from [Uptime Kuma](https://github.com/louislam/uptime-kuma).
+The full dependency list is in [Cargo.toml](Cargo.toml) and the workspace crates' manifests.
+
+## License
+
+uptimestatus is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at
+your option. Contributions are accepted under the same terms. Dependencies keep their own licenses.
+
+Vendored assets include:
+
+- **Starbase** components and styles under MIT: [license](crates/uptime-web/static/starbase/LICENSE),
+  [source and modification notes](crates/uptime-web/static/starbase/README.md).
+- **Datastar v1.0.4 with Rocket** under MIT: [license](crates/uptime-web/vendor/datastar/LICENSE),
+  [vendoring notes](crates/uptime-web/vendor/datastar/README.md).
+- **Pixelify Sans** and **JetBrains Mono** under the SIL Open Font License:
+  [Pixelify Sans license](crates/uptime-web/static/starbase/fonts/OFL-PixelifySans.txt),
+  [JetBrains Mono license](crates/uptime-web/static/starbase/fonts/OFL-JetBrainsMono.txt).
+- **Prism**, used by Starbase's code editor, under MIT:
+  [license](crates/uptime-web/static/starbase/c/code-editor/vendor/LICENSE-prism.txt).

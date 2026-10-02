@@ -130,6 +130,7 @@ async fn exercise(store: &Store, prefix: &str) -> (i64, MonitorId, i64) {
                 latency: Some(Duration::from_millis(42)),
                 status_code: None,
                 reason: None,
+                response_body: None,
             },
             runtime: Runtime {
                 state: MonitorState::Down,
@@ -391,4 +392,78 @@ fn temporary_path(backend: &str) -> std::path::PathBuf {
         "uptimestatus-{backend}-{}-{nonce}.db",
         std::process::id()
     ))
+}
+
+#[tokio::test]
+async fn incident_diagnostics_survive_retention_on_sqlite_and_turso() {
+    for (scheme, backend) in [("sqlite", Backend::Sqlite), ("turso", Backend::Turso)] {
+        let path = temporary_path(scheme);
+        let store = connect(&format!("{scheme}:{}", path.display()), backend).await;
+        store.migrate().await.unwrap();
+        let monitor = store
+            .create_monitor(&http_spec("incident"), t(0))
+            .await
+            .unwrap();
+        for (at, state, failures) in [(10, MonitorState::Pending, 1), (20, MonitorState::Down, 2)] {
+            store
+                .record_check(&CheckRecord {
+                    monitor_id: monitor.id,
+                    scheduled_for: t(at),
+                    checked_at: t(at),
+                    verdict: Verdict {
+                        health: Health::Down,
+                        latency: None,
+                        status_code: Some(503),
+                        reason: Some(uptime_domain::DownReason::UnexpectedStatus(503)),
+                        response_body: Some("upstream unavailable".into()),
+                    },
+                    runtime: Runtime {
+                        state,
+                        consecutive_failures: failures,
+                    },
+                    transition: (failures == 2).then_some(Transition::WentDown),
+                    cert: None,
+                    next_run_at: t(at + 60),
+                    region: "test".into(),
+                })
+                .await
+                .unwrap();
+        }
+        let incident = store.list_incidents(10).await.unwrap().remove(0);
+        assert_eq!(
+            incident
+                .updates
+                .iter()
+                .filter(|u| u.check.is_some())
+                .count(),
+            2
+        );
+        assert_eq!(
+            incident.updates[0]
+                .check
+                .as_ref()
+                .unwrap()
+                .response_body
+                .as_deref(),
+            Some("upstream unavailable")
+        );
+        assert_eq!(
+            store.recent_checks(monitor.id, 1).await.unwrap()[0]
+                .response_body
+                .as_deref(),
+            Some("upstream unavailable")
+        );
+        store.prune_checks_before(t(30), 10).await.unwrap();
+        assert_eq!(
+            store.incident(incident.id).await.unwrap().unwrap(),
+            incident
+        );
+        let public = store.public_incident(incident.id).await.unwrap().unwrap();
+        assert_eq!(public.updates.len(), 1);
+        assert!(public.updates[0].check.is_none());
+        assert!(store.delete_incident(incident.id).await.unwrap());
+        assert!(store.incident(incident.id).await.unwrap().is_none());
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
 }

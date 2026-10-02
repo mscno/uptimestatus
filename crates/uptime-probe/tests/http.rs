@@ -461,3 +461,81 @@ async fn evaluates_the_json_rule_against_the_body() {
         }
     }
 }
+
+#[tokio::test]
+async fn failed_http_responses_include_a_bounded_body_without_a_content_rule() {
+    let server = MockServer::start().await;
+    Mock::given(path("/failed"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("upstream unavailable"))
+        .mount(&server)
+        .await;
+    let observed = probe(get(format!("{}/failed", server.uri()))).await;
+    let verdict = uptime_domain::evaluate(
+        &CheckSpec::Http(get(format!("{}/failed", server.uri()))),
+        &Default::default(),
+        &observed,
+    );
+    assert_eq!(verdict.status_code, Some(503));
+    assert_eq!(
+        verdict.response_body.as_deref(),
+        Some("upstream unavailable")
+    );
+
+    Mock::given(path("/large"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("é".repeat(10_000)))
+        .mount(&server)
+        .await;
+    let observed = probe(get(format!("{}/large", server.uri()))).await;
+    let Observation::Responded {
+        response_body: Some(body),
+        ..
+    } = observed
+    else {
+        panic!("response")
+    };
+    assert_eq!(body.len(), 4096);
+}
+
+#[tokio::test]
+async fn response_excerpt_limit_does_not_shorten_keyword_evaluation() {
+    let server = MockServer::start().await;
+    Mock::given(path("/large"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(format!("{}healthy", "x".repeat(5000))),
+        )
+        .mount(&server)
+        .await;
+    let mut check = get(format!("{}/large", server.uri()));
+    check.keyword = Some(KeywordRule {
+        text: "healthy".into(),
+        absent: false,
+    });
+    let observed = probe(check.clone()).await;
+    let verdict = uptime_domain::evaluate(&CheckSpec::Http(check), &Default::default(), &observed);
+    assert_eq!(verdict.health, uptime_domain::Health::Up);
+    assert_eq!(verdict.response_body, None);
+}
+
+#[tokio::test]
+async fn incomplete_error_responses_keep_the_status_and_partial_body() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = [0; 2048];
+        tokio::io::AsyncReadExt::read(&mut socket, &mut request)
+            .await
+            .unwrap();
+        socket.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 100\r\nConnection: close\r\n\r\npartial error").await.unwrap();
+        // Ensure the partial body arrives before the connection closes.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    });
+    let check = get(format!("http://{address}/"));
+    let observed = probe(check.clone()).await;
+    let verdict = uptime_domain::evaluate(&CheckSpec::Http(check), &Default::default(), &observed);
+    assert_eq!(verdict.health, uptime_domain::Health::Down);
+    assert_eq!(verdict.status_code, Some(503));
+    assert_eq!(verdict.response_body.as_deref(), Some("partial error"));
+    assert!(verdict.reason.unwrap().to_string().contains("io:"));
+    server.await.unwrap();
+}

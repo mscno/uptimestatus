@@ -85,6 +85,9 @@ pub struct Verdict {
     pub health: Health,
     pub latency: Option<Duration>,
     pub status_code: Option<u16>,
+    /// Bounded response text, retained only for failed checks.
+    #[serde(default)]
+    pub response_body: Option<String>,
     /// Set when `health` is [`Health::Down`].
     pub reason: Option<DownReason>,
 }
@@ -96,6 +99,20 @@ pub struct Verdict {
 /// A [`FailureKind::Blocked`] result is never inverted into success.
 pub fn evaluate(check: &CheckSpec, policy: &CheckPolicy, observation: &Observation) -> Verdict {
     let (latency, status_code, raw) = match observation {
+        Observation::FailedResponse {
+            latency,
+            status_code,
+            kind,
+            message,
+            ..
+        } => (
+            Some(*latency),
+            Some(*status_code),
+            Err(DownReason::Probe {
+                kind: *kind,
+                message: message.clone(),
+            }),
+        ),
         Observation::Failed { kind, message } => (
             None,
             None,
@@ -136,6 +153,11 @@ pub fn evaluate(check: &CheckSpec, policy: &CheckPolicy, observation: &Observati
             latency,
             status_code,
             reason: Some(reason),
+            response_body: match observation {
+                Observation::Responded { response_body, .. } => response_body.clone(),
+                Observation::FailedResponse { response_body, .. } => Some(response_body.clone()),
+                Observation::Failed { .. } => None,
+            },
         },
         Ok(()) => {
             let slow = !policy.invert
@@ -146,6 +168,7 @@ pub fn evaluate(check: &CheckSpec, policy: &CheckPolicy, observation: &Observati
                 latency,
                 status_code,
                 reason: None,
+                response_body: None,
             }
         }
     }
@@ -206,6 +229,7 @@ mod tests {
             keyword_found: None,
             json_matched: None,
             cert_expires_at: None,
+            response_body: None,
         }
     }
 
@@ -222,6 +246,7 @@ mod tests {
             latency: Some(ms(latency_ms)),
             status_code: status,
             reason: None,
+            response_body: None,
         }
     }
 
@@ -231,6 +256,7 @@ mod tests {
             latency,
             status_code: status,
             reason: Some(reason),
+            response_body: None,
         }
     }
 
@@ -310,6 +336,7 @@ mod tests {
             keyword_found: Some(true),
             json_matched: None,
             cert_expires_at: None,
+            response_body: None,
         };
         let missing = Observation::Responded {
             latency: ms(1),
@@ -317,6 +344,7 @@ mod tests {
             keyword_found: Some(false),
             json_matched: None,
             cert_expires_at: None,
+            response_body: None,
         };
         assert_eq!(
             evaluate(&CheckSpec::Http(check.clone()), &policy, &found).health,
@@ -344,6 +372,7 @@ mod tests {
             keyword_found: None,
             json_matched,
             cert_expires_at: None,
+            response_body: None,
         };
         let spec = CheckSpec::Http(check);
 
@@ -373,6 +402,7 @@ mod tests {
             keyword_found: Some(true),
             json_matched: None,
             cert_expires_at: None,
+            response_body: None,
         };
         let absent = Observation::Responded {
             latency: ms(1),
@@ -380,6 +410,7 @@ mod tests {
             keyword_found: Some(false),
             json_matched: None,
             cert_expires_at: None,
+            response_body: None,
         };
         assert_eq!(
             evaluate(&CheckSpec::Http(check.clone()), &policy, &absent).health,
@@ -406,6 +437,7 @@ mod tests {
             keyword_found: Some(false),
             json_matched: None,
             cert_expires_at: None,
+            response_body: None,
         };
         assert_eq!(
             evaluate(&CheckSpec::Http(check), &CheckPolicy::default(), &obs).reason,
@@ -422,6 +454,7 @@ mod tests {
             keyword_found: None,
             json_matched: None,
             cert_expires_at: None,
+            response_body: None,
         };
         assert_eq!(evaluate(&check, &CheckPolicy::default(), &obs), up(None, 3));
     }
@@ -438,6 +471,7 @@ mod tests {
             keyword_found: found,
             json_matched: None,
             cert_expires_at: None,
+            response_body: None,
         };
         let policy = CheckPolicy::default();
 
@@ -465,7 +499,8 @@ mod tests {
                 health: Health::Up,
                 latency: None,
                 status_code: None,
-                reason: None
+                reason: None,
+                response_body: None,
             }
         );
     }

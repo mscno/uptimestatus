@@ -21,6 +21,7 @@ async fn record_at(db: &TestDb, monitor: uptime_domain::MonitorId, at: i64) {
                 latency: Some(Duration::from_millis(5)),
                 status_code: Some(200),
                 reason: None,
+                response_body: None,
             },
             runtime: Runtime {
                 state: MonitorState::Up,

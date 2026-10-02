@@ -64,6 +64,7 @@ pub(crate) async fn probe(
             return Ok(Session {
                 latency: started.elapsed(),
                 expected_found: None,
+                response_body: None,
                 cert_expires_at: None,
             });
         }
@@ -77,6 +78,7 @@ pub(crate) async fn probe(
             keyword_found: session.expected_found,
             json_matched: None,
             cert_expires_at: session.cert_expires_at,
+            response_body: session.response_body,
         },
         Ok(Err((kind, message))) => Observation::Failed { kind, message },
         Err(_) => Observation::Failed {
@@ -90,6 +92,7 @@ pub(crate) async fn probe(
 struct Session {
     latency: Duration,
     expected_found: Option<bool>,
+    response_body: Option<String>,
     cert_expires_at: Option<jiff::Timestamp>,
 }
 
@@ -101,10 +104,11 @@ async fn converse(
     started: Instant,
 ) -> Result<Session, Failure> {
     if !check.tls {
-        let found = exchange(stream, check, deadline).await?;
+        let (found, response_body) = exchange(stream, check, deadline).await?;
         return Ok(Session {
             latency: started.elapsed(),
             expected_found: found,
+            response_body,
             cert_expires_at: None,
         });
     }
@@ -121,10 +125,11 @@ async fn converse(
         .peer_certificates()
         .and_then(<[_]>::first)
         .and_then(|cert| crate::cert::not_after(cert.as_ref()));
-    let found = exchange(tls, check, deadline).await?;
+    let (found, response_body) = exchange(tls, check, deadline).await?;
     Ok(Session {
         latency: started.elapsed(),
         expected_found: found,
+        response_body,
         cert_expires_at,
     })
 }
@@ -135,7 +140,7 @@ async fn exchange<S>(
     mut stream: S,
     check: &TcpCheck,
     deadline: TokioInstant,
-) -> Result<Option<bool>, Failure>
+) -> Result<(Option<bool>, Option<String>), Failure>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -145,19 +150,30 @@ where
         stream.flush().await.map_err(io_failure)?;
     }
     let Some(expect) = check.expect.as_deref().filter(|e| !e.is_empty()) else {
-        return Ok(None);
+        return Ok((None, None));
     };
     let mut reply = Vec::new();
     let mut chunk = [0u8; 512];
     loop {
         if String::from_utf8_lossy(&reply).contains(expect) {
-            return Ok(Some(true));
+            return Ok((
+                Some(true),
+                Some(String::from_utf8_lossy(&reply).into_owned()),
+            ));
         }
         if reply.len() >= MAX_REPLY {
-            return Ok(Some(false));
+            return Ok((
+                Some(false),
+                Some(String::from_utf8_lossy(&reply).into_owned()),
+            ));
         }
         match tokio::time::timeout_at(deadline, stream.read(&mut chunk)).await {
-            Ok(Ok(0)) | Err(_) => return Ok(Some(false)),
+            Ok(Ok(0)) | Err(_) => {
+                return Ok((
+                    Some(false),
+                    Some(String::from_utf8_lossy(&reply).into_owned()),
+                ));
+            }
             Ok(Ok(read)) => reply.extend_from_slice(&chunk[..read]),
             Ok(Err(error)) => return Err(io_failure(error)),
         }

@@ -75,6 +75,7 @@ fn ok(latency_ms: u64) -> Observation {
         keyword_found: None,
         json_matched: None,
         cert_expires_at: None,
+        response_body: None,
     }
 }
 
@@ -438,6 +439,7 @@ async fn expiring_certificates_alert_once_per_threshold() {
         keyword_found: None,
         json_matched: None,
         cert_expires_at: Some(plus(start, 10 * 86_400 + 3600)),
+        response_body: None,
     };
     let clock = ManualClock::at(start);
     let scheduler = scheduler(store, ScriptedProbe::new(vec![], expiring), &clock, 4);
@@ -581,4 +583,165 @@ async fn end_to_end_with_the_real_prober() {
     let history = db.store().recent_checks(monitor.id, 1).await.unwrap();
     assert_eq!(history[0].status_code, Some(200));
     assert_eq!(history[0].state_after, MonitorState::Up);
+}
+
+#[tokio::test]
+async fn incidents_keep_original_retry_and_later_failures_until_recovery() {
+    let db = TestDb::new().await;
+    let store = db.store();
+    let start = base_time();
+    let monitor = store
+        .create_monitor(&spec("incident", 1), start)
+        .await
+        .unwrap();
+    let clock = ManualClock::at(start);
+    let failure = |status, body: &str| Observation::Responded {
+        status_code: Some(status),
+        response_body: Some(body.into()),
+        latency: Duration::from_millis(7),
+        keyword_found: None,
+        json_matched: None,
+        cert_expires_at: None,
+    };
+    let runner = scheduler(
+        store,
+        ScriptedProbe::new(
+            vec![
+                failure(503, "first failure"),
+                failure(502, "retry failure"),
+                refused(),
+                ok(5),
+                failure(500, "new outage"),
+                failure(500, "new retry"),
+            ],
+            ok(5),
+        ),
+        &clock,
+        4,
+    );
+
+    runner.run_due().await.unwrap();
+    assert!(store.list_incidents(10).await.unwrap().is_empty());
+    clock.set(plus(start, 20));
+    runner.run_due().await.unwrap();
+    let open = store.list_incidents(10).await.unwrap().remove(0);
+    assert_eq!(open.status, uptime_domain::IncidentStatus::Investigating);
+    assert_eq!(open.started_at, plus(start, 20));
+    assert_eq!(open.updates.len(), 3);
+    let retry = open.updates[0].check.as_ref().unwrap();
+    assert_eq!(retry.status_code, Some(502));
+    assert_eq!(retry.response_body.as_deref(), Some("retry failure"));
+    assert_eq!(retry.error.as_deref(), Some("unexpected status 502"));
+    assert_eq!(retry.state_after, MonitorState::Down);
+    let original = open.updates[2].check.as_ref().unwrap();
+    assert_eq!(original.status_code, Some(503));
+    assert_eq!(original.response_body.as_deref(), Some("first failure"));
+    assert_eq!(original.state_after, MonitorState::Pending);
+    assert_eq!(original.region, "test-region");
+
+    clock.set(plus(start, 80));
+    runner.run_due().await.unwrap();
+    assert_eq!(store.list_incidents(10).await.unwrap().len(), 1);
+    let still_open = store.incident(open.id).await.unwrap().unwrap();
+    assert_eq!(still_open.updates.len(), 4);
+    assert_eq!(
+        still_open.updates[0].check.as_ref().unwrap().error_kind,
+        Some(FailureKind::Refused)
+    );
+
+    // A maintenance check hides the Down state; recovery must still resolve the incident.
+    store
+        .create_maintenance(
+            &uptime_domain::MaintenanceSpec {
+                title: "Maintenance".into(),
+                description: None,
+                starts_at: plus(start, 100),
+                ends_at: plus(start, 150),
+                repeat: None,
+                repeat_until: None,
+                monitors: vec!["incident".parse().unwrap()],
+            },
+            start,
+        )
+        .await
+        .unwrap();
+    clock.set(plus(start, 140));
+    runner.run_due().await.unwrap();
+    assert_eq!(state(store, monitor.id).await.0, MonitorState::Maintenance);
+    assert_eq!(
+        store.incident(open.id).await.unwrap().unwrap().resolved_at,
+        None
+    );
+    // Failures after maintenance belong to the same open incident.
+    clock.set(plus(start, 200));
+    runner.run_due().await.unwrap();
+    clock.set(plus(start, 220));
+    runner.run_due().await.unwrap();
+    // Both failed again, so the existing incident stays open.
+    assert_eq!(store.list_incidents(10).await.unwrap().len(), 1);
+    clock.set(plus(start, 280));
+    runner.run_due().await.unwrap();
+    let resolved = store.incident(open.id).await.unwrap().unwrap();
+    assert_eq!(resolved.status, uptime_domain::IncidentStatus::Resolved);
+    assert_eq!(resolved.resolved_at, Some(plus(start, 280)));
+    assert_eq!(resolved.updates[0].body, "incident recovered after 4m 20s.");
+    assert_eq!(resolved.updates.len(), 7);
+    store
+        .prune_checks_before(plus(start, 300), 10)
+        .await
+        .unwrap();
+    assert_eq!(store.incident(open.id).await.unwrap().unwrap(), resolved);
+
+    // A new confirmed outage gets a fresh incident.
+    for at in [340, 360] {
+        // Scripted failures are exhausted; use another scheduler to fail twice.
+        clock.set(plus(start, at));
+        scheduler(store, ScriptedProbe::new(vec![], refused()), &clock, 4)
+            .run_due()
+            .await
+            .unwrap();
+    }
+    assert_eq!(store.list_incidents(10).await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_successful_retry_does_not_open_an_incident() {
+    let db = TestDb::new().await;
+    let start = base_time();
+    let monitor = db
+        .store()
+        .create_monitor(&spec("transient", 1), start)
+        .await
+        .unwrap();
+    let clock = ManualClock::at(start);
+    let scheduler = scheduler(
+        db.store(),
+        ScriptedProbe::new(vec![refused(), ok(1)], ok(1)),
+        &clock,
+        4,
+    );
+    scheduler.run_due().await.unwrap();
+    clock.set(plus(start, 20));
+    scheduler.run_due().await.unwrap();
+    assert_eq!(state(db.store(), monitor.id).await.0, MonitorState::Up);
+    assert!(db.store().list_incidents(10).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn incidents_require_two_failures_even_when_retries_are_disabled() {
+    let db = TestDb::new().await;
+    let start = base_time();
+    db.store()
+        .create_monitor(&spec("no-retries", 0), start)
+        .await
+        .unwrap();
+    let clock = ManualClock::at(start);
+    let scheduler = scheduler(db.store(), ScriptedProbe::new(vec![], refused()), &clock, 4);
+    scheduler.run_due().await.unwrap();
+    assert!(db.store().list_incidents(10).await.unwrap().is_empty());
+    clock.set(plus(start, 60));
+    scheduler.run_due().await.unwrap();
+    let incidents = db.store().list_incidents(10).await.unwrap();
+    assert_eq!(incidents.len(), 1);
+    assert_eq!(incidents[0].updates.len(), 3);
 }

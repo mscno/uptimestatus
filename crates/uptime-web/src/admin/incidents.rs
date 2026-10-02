@@ -124,7 +124,7 @@ pub(crate) async fn incidents_page(cx: &Cx) -> Result<impl View> {
                                     <td><span class=(impact_pill(incident.impact))>(incident.impact.label())</span></td>
                                     <td class="small when">ago(at: incident.started_at, now: now)</td>
                                     <td class="small hide-sm">(fmt::duration(incident.resolved_at.unwrap_or(now).duration_since(incident.started_at).unsigned_abs()))</td>
-                                    <td class="small muted hide-sm">(if incident.kind == IncidentKind::Manual { "status pages" } else { "console only" })</td>
+                                    <td class="small muted hide-sm">"status pages"</td>
                                 </tr>
                             }
                         </tbody>
@@ -345,11 +345,23 @@ pub(crate) async fn incident_detail(cx: &Cx) -> Result<impl View> {
                                 " "
                                 <span class="small muted">ago(at: update.created_at, now: now) " · " (fmt::when(update.created_at))</span>
                                 <p>(update.body.as_str())</p>
+                                if let Some(check) = &update.check {
+                                    <p class="small muted">
+                                        "Check: " (check.state_after.as_str()) " · Region: " (check.region.as_str())
+                                        if let Some(code) = check.status_code { " · HTTP " (code) }
+                                        if let Some(ms) = check.latency_ms { " · " (ms) " ms" }
+                                        if let Some(kind) = check.error_kind { " · " (kind.as_str()) }
+                                    </p>
+                                    if let Some(body) = &check.response_body {
+                                        <details><summary>"Response excerpt"</summary><pre>(body.as_str())</pre></details>
+                                    }
+                                }
+
                             </li>
                         }
                     </ol>
                     <p class="small muted">
-                        (if incident.kind == IncidentKind::Auto { "Opened automatically. Automatic incidents show only here." } else { "Shown on status pages with an affected monitor." })
+                        (if incident.kind == IncidentKind::Auto { "Opened automatically. Check diagnostics are visible only here." } else { "Shown on status pages with an affected monitor." })
                         " Affects: " (affected.join(", "))
                     </p>
                 </div>

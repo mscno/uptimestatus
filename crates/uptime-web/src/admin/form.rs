@@ -283,7 +283,13 @@ impl MonitorForm {
         };
         let degraded_after =
             blank(&self.degraded_after).map(|text| duration(&mut errors, "degraded_after", text));
-        let retries = count(&mut errors, "retries", &self.retries, 0, 20);
+        let retries = count(
+            &mut errors,
+            "retries",
+            &self.retries,
+            CheckPolicy::default().retries,
+            20,
+        );
         let resend_every = count(&mut errors, "resend_every", &self.resend_every, 0, 1000);
         let tags = normalize_tags(&self.tags)
             .map_err(|e| errors.insert("tags", sentence(&e)))
@@ -1013,7 +1019,7 @@ mod tests {
             "defaults to the interval"
         );
         assert_eq!(spec.policy.timeout, Duration::from_secs(10));
-        assert_eq!((spec.policy.retries, spec.policy.resend_every), (0, 0));
+        assert_eq!((spec.policy.retries, spec.policy.resend_every), (1, 0));
         assert!(!spec.active, "missing checkbox means unticked");
     }
 

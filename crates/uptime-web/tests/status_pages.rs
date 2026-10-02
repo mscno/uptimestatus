@@ -76,6 +76,7 @@ async fn record(app: &TestApp, id: MonitorId, state: MonitorState) {
                 latency: Some(Duration::from_millis(20)),
                 status_code: Some(200),
                 reason: None,
+                response_body: None,
             },
             runtime: Runtime {
                 state,

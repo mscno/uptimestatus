@@ -139,5 +139,6 @@ pub(crate) async fn probe(
         keyword_found,
         json_matched: None,
         cert_expires_at: None,
+        response_body: Some(answers.join("\n")),
     }
 }

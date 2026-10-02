@@ -476,7 +476,8 @@ async fn frame(
                     (child)
                     <footer class="footer">
                         <a href=(format!("{base}/feed.atom")) rel="alternate" type="application/atom+xml">"Atom feed"</a>
-                        " · Powered by uptimestatus"
+                        " · "
+                        <a href="https://github.com/mscno/uptimestatus">"Powered by uptimestatus"</a>
                     </footer>
                 </div>
             </main>

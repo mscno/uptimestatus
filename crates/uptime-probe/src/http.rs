@@ -60,6 +60,7 @@ impl HttpProbe {
         };
 
         let started = Instant::now();
+        let deadline = tokio::time::Instant::now() + timeout;
         let attempt = async {
             let mut request = client
                 .request(method(check), check.url.clone())
@@ -84,22 +85,47 @@ impl HttpProbe {
                 .get::<reqwest::tls::TlsInfo>()
                 .and_then(reqwest::tls::TlsInfo::peer_certificate)
                 .and_then(crate::cert::not_after);
-            let status_code = Some(response.status().as_u16());
-            let (keyword_found, json_matched) = if check.keyword.is_some() || check.json.is_some() {
-                let body = read_body(response, self.max_body_bytes).await?;
-                (
-                    check.keyword.as_ref().map(|rule| body.contains(&rule.text)),
-                    check.json.as_ref().map(|rule| rule.matches(&body)),
-                )
+            let status_code = response.status().as_u16();
+            let response_body = if !check.accepted_status.contains(response.status().as_u16())
+                || check.keyword.is_some()
+                || check.json.is_some()
+            {
+                let limit = if check.keyword.is_some() || check.json.is_some() {
+                    self.max_body_bytes
+                } else {
+                    self.max_body_bytes.min(4096)
+                };
+                let (body, error) = read_body(response, limit, deadline).await;
+                if let Some((kind, message)) = error {
+                    return Ok(Observation::FailedResponse {
+                        latency,
+                        status_code,
+                        response_body: excerpt(body),
+                        kind,
+                        message,
+                    });
+                }
+                Some(body)
             } else {
-                (None, None)
+                None
             };
+            let keyword_found = check.keyword.as_ref().map(|rule| {
+                response_body
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains(&rule.text)
+            });
+            let json_matched = check
+                .json
+                .as_ref()
+                .map(|rule| rule.matches(response_body.as_deref().unwrap_or_default()));
             Ok::<_, reqwest::Error>(Observation::Responded {
                 latency,
-                status_code,
+                status_code: Some(status_code),
                 keyword_found,
                 json_matched,
                 cert_expires_at,
+                response_body: response_body.map(excerpt),
             })
         };
 
@@ -168,15 +194,43 @@ fn ip_literal(url: &Url) -> Option<IpAddr> {
 }
 
 /// Reads at most `limit` bytes of the body, as text.
-async fn read_body(mut response: reqwest::Response, limit: usize) -> reqwest::Result<String> {
+async fn read_body(
+    mut response: reqwest::Response,
+    limit: usize,
+    deadline: tokio::time::Instant,
+) -> (String, Option<(FailureKind, String)>) {
     let mut body = Vec::new();
-    while body.len() < limit
-        && let Some(chunk) = response.chunk().await?
-    {
-        let take = chunk.len().min(limit - body.len());
-        body.extend_from_slice(&chunk[..take]);
+    let mut failure = None;
+    while body.len() < limit {
+        match tokio::time::timeout_at(deadline, response.chunk()).await {
+            Ok(Ok(Some(chunk))) => {
+                let take = chunk.len().min(limit - body.len());
+                body.extend_from_slice(&chunk[..take]);
+            }
+            Ok(Ok(None)) => break,
+            Ok(Err(error)) => {
+                failure = Some(classify(&error));
+                break;
+            }
+            Err(_) => {
+                failure = Some((
+                    FailureKind::Timeout,
+                    "timed out reading response body".into(),
+                ));
+                break;
+            }
+        }
     }
-    Ok(String::from_utf8_lossy(&body).into_owned())
+    (String::from_utf8_lossy(&body).into_owned(), failure)
+}
+
+fn excerpt(mut text: String) -> String {
+    let mut end = text.len().min(4096);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    text
 }
 
 fn failed(kind: FailureKind, message: String) -> Observation {

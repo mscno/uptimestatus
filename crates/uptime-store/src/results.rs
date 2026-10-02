@@ -2,6 +2,7 @@
 //! all in one transaction.
 
 use jiff::{Timestamp, civil::Date, tz::TimeZone};
+use serde::{Deserialize, Serialize};
 use uptime_domain::{
     Alert, AlertMonitor, DownReason, FailureKind, Health, MonitorId, MonitorState, Runtime, Tally,
     Transition, Verdict,
@@ -46,7 +47,7 @@ pub struct CertUpdate {
 }
 
 /// One row of raw check history.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredCheck {
     pub scheduled_for: Timestamp,
     pub checked_at: Timestamp,
@@ -56,6 +57,7 @@ pub struct StoredCheck {
     pub status_code: Option<u16>,
     pub error_kind: Option<FailureKind>,
     pub error: Option<String>,
+    pub response_body: Option<String>,
     pub region: String,
 }
 
@@ -134,7 +136,7 @@ impl Store {
         let mut db = self.db();
         let mut tx = self.transaction(&mut db).await?;
 
-        toasty::create!(CheckResultRecord {
+        let stored = toasty::create!(CheckResultRecord {
             monitor_id: record.monitor_id.0,
             scheduled_for: record.scheduled_for,
             checked_at: record.checked_at,
@@ -144,6 +146,7 @@ impl Store {
             status_code: status_code,
             error_kind: error_kind,
             error: error.clone(),
+            response_body: verdict.response_body.clone(),
             region: record.region.as_str(),
         })
         .exec(&mut tx)
@@ -154,6 +157,27 @@ impl Store {
             .exec(&mut tx)
             .await?
             .ok_or(StoreError::MonitorNotFound(record.monitor_id))?;
+        // Incident lifecycle follows confirmed check state, independently of
+        // alert transitions (recovery may follow maintenance or a pause).
+        if matches!(
+            record.runtime.state,
+            MonitorState::Down | MonitorState::Pending
+        ) && verdict.health == Health::Down
+        {
+            let monitor = MonitorRecord::filter_by_id(record.monitor_id.0)
+                .get(&mut tx)
+                .await?;
+            incidents::record_auto_failure(&mut tx, &monitor, record, stored).await?;
+        } else if matches!(
+            record.runtime.state,
+            MonitorState::Up | MonitorState::Degraded
+        ) && verdict.health != Health::Down
+        {
+            let monitor = MonitorRecord::filter_by_id(record.monitor_id.0)
+                .get(&mut tx)
+                .await?;
+            incidents::resolve_auto(&mut tx, monitor.id, &monitor.name, record.checked_at).await?;
+        }
         if let Some(transition) = record.transition {
             let monitor = MonitorRecord::filter_by_id(record.monitor_id.0)
                 .first()
@@ -166,23 +190,6 @@ impl Store {
                     .map(|since| record.checked_at.duration_since(since).as_secs()),
                 _ => None,
             };
-            match transition {
-                Transition::WentDown => {
-                    incidents::open_auto(&mut tx, monitor.id, &monitor.name, record.checked_at)
-                        .await?;
-                }
-                Transition::Recovered => {
-                    incidents::resolve_auto(
-                        &mut tx,
-                        monitor.id,
-                        &monitor.name,
-                        downtime_secs,
-                        record.checked_at,
-                    )
-                    .await?;
-                }
-                Transition::Resend => {}
-            }
             let channels: Vec<i64> = MonitorChannelRecord::filter(
                 MonitorChannelRecord::fields()
                     .monitor_id()
@@ -411,7 +418,7 @@ fn to_i64(count: u64) -> i64 {
     i64::try_from(count).unwrap_or(i64::MAX)
 }
 
-fn stored_check(record: CheckResultRecord) -> Result<StoredCheck> {
+pub(crate) fn stored_check(record: CheckResultRecord) -> Result<StoredCheck> {
     Ok(StoredCheck {
         scheduled_for: record.scheduled_for,
         checked_at: record.checked_at,
@@ -430,6 +437,7 @@ fn stored_check(record: CheckResultRecord) -> Result<StoredCheck> {
             .map(|kind| convert::parse("check_results.error_kind", kind))
             .transpose()?,
         error: record.error,
+        response_body: record.response_body,
         region: record.region,
     })
 }

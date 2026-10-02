@@ -207,6 +207,7 @@ async fn daily_tallies_cover_the_requested_range() {
                     latency: Some(Duration::from_millis(5)),
                     status_code: None,
                     reason: None,
+                    response_body: None,
                 },
                 runtime: Runtime {
                     state: MonitorState::Up,

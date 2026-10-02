@@ -7,8 +7,12 @@ use uptime_domain::{Impact, IncidentKind, IncidentStatus, MonitorId, MonitorKey,
 
 use crate::{
     Result, Store, StoreError, convert,
-    models::{IncidentMonitorRecord, IncidentRecord, IncidentUpdateRecord},
+    models::{
+        CheckResultRecord, IncidentMonitorRecord, IncidentRecord, IncidentUpdateRecord,
+        MonitorRecord,
+    },
     pages::resolve_keys,
+    results::{CheckRecord, StoredCheck, stored_check},
 };
 
 /// What an admin declares.
@@ -28,6 +32,8 @@ pub struct IncidentUpdate {
     pub status: IncidentStatus,
     pub body: String,
     pub created_at: Timestamp,
+    /// Check diagnostics, preserved even after raw results are pruned.
+    pub check: Option<StoredCheck>,
 }
 
 /// An incident with its affected monitors and timeline (newest update first).
@@ -131,6 +137,18 @@ impl Store {
         Ok(deleted > 0)
     }
 
+    /// Public detail with internal check diagnostics removed.
+    pub async fn public_incident(&self, id: i64) -> Result<Option<Incident>> {
+        let Some(record) = IncidentRecord::filter_by_id(id)
+            .first()
+            .exec(&mut self.db())
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(self.public(vec![record]).await?.pop())
+    }
+
     pub async fn incident(&self, id: i64) -> Result<Option<Incident>> {
         let Some(record) = IncidentRecord::filter_by_id(id)
             .first()
@@ -155,7 +173,7 @@ impl Store {
         Ok(incidents)
     }
 
-    /// Manual incidents touching any of `monitors` that are open, or were
+    /// Incidents touching any of `monitors` that are open, or were
     /// resolved after `resolved_since`; newest first.
     pub async fn public_incidents(
         &self,
@@ -175,7 +193,7 @@ impl Store {
         self.public(records).await
     }
 
-    /// Manual incidents touching any of `monitors` that started in
+    /// Incidents touching any of `monitors` that started in
     /// `[from, to)`; newest first. A status page's incident history.
     pub async fn incident_history(
         &self,
@@ -221,13 +239,12 @@ impl Store {
         Ok(ids)
     }
 
-    /// The manual (public) ones of `records`, hydrated, newest first.
+    /// Public timelines omit internal check diagnostics, newest first.
     async fn public(&self, records: Vec<IncidentRecord>) -> Result<Vec<Incident>> {
-        let records = records
-            .into_iter()
-            .filter(|r| r.kind == IncidentKind::Manual.as_str())
-            .collect();
         let mut incidents = self.hydrate(records).await?;
+        for incident in &mut incidents {
+            incident.updates.retain(|update| update.check.is_none());
+        }
         incidents.sort_by_key(|i| std::cmp::Reverse((i.started_at, i.id)));
         Ok(incidents)
     }
@@ -254,6 +271,14 @@ impl Store {
                     id: record.id,
                     status: convert::parse("incident_updates.status", &record.status)?,
                     body: record.body,
+                    check: record
+                        .check_json
+                        .as_deref()
+                        .map(|json| {
+                            serde_json::from_str(json)
+                                .map_err(|e| StoreError::corrupt("incident_updates.check_json", e))
+                        })
+                        .transpose()?,
                     created_at: record.created_at,
                 });
         }
@@ -310,23 +335,35 @@ async fn add_update(
     Ok(())
 }
 
-/// Opens an automatic incident for a monitor that just went down (unless one
-/// is already open). Runs inside the check's transaction.
-pub(crate) async fn open_auto(
+/// Opens after confirmation and captures the whole failure streak, including
+/// pending attempts. Subsequent failures append diagnostics to the same incident.
+pub(crate) async fn record_auto_failure(
     tx: &mut toasty::Transaction<'_>,
-    monitor_id: i64,
-    name: &str,
-    at: Timestamp,
+    monitor: &MonitorRecord,
+    check: &CheckRecord,
+    result: CheckResultRecord,
 ) -> Result<()> {
-    if open_auto_incident(tx, monitor_id).await?.is_some() {
+    if let Some(incident) = open_auto_incident(tx, monitor.id).await? {
+        return add_check_update(
+            tx,
+            incident.id,
+            convert::parse("incidents.status", &incident.status)?,
+            result,
+        )
+        .await;
+    }
+    if check.runtime.state != uptime_domain::MonitorState::Down
+        || check.runtime.consecutive_failures < 2
+    {
         return Ok(());
     }
+    let at = check.checked_at;
     let record = toasty::create!(IncidentRecord {
-        title: format!("{name} is down"),
+        title: format!("{} is down", monitor.name),
         impact: Impact::Major.as_str(),
         status: IncidentStatus::Investigating.as_str(),
         kind: IncidentKind::Auto.as_str(),
-        monitor_id: Some(monitor_id),
+        monitor_id: Some(monitor.id),
         started_at: at,
     })
     .exec(&mut *tx)
@@ -335,13 +372,47 @@ pub(crate) async fn open_auto(
         tx,
         record.id,
         IncidentStatus::Investigating,
-        &format!("{name} stopped responding."),
+        &format!("{} failed its checks.", monitor.name),
         at,
     )
     .await?;
+    let fields = CheckResultRecord::fields();
+    let mut failures = CheckResultRecord::filter(fields.monitor_id().eq(monitor.id))
+        .order_by(fields.id().desc())
+        .limit(check.runtime.consecutive_failures as usize)
+        .exec(&mut *tx)
+        .await?;
+    failures.reverse();
+    for failure in failures {
+        if failure.health == "down" {
+            add_check_update(tx, record.id, IncidentStatus::Investigating, failure).await?;
+        }
+    }
     toasty::create!(IncidentMonitorRecord {
         incident_id: record.id,
-        monitor_id: monitor_id,
+        monitor_id: monitor.id,
+    })
+    .exec(&mut *tx)
+    .await?;
+    Ok(())
+}
+
+async fn add_check_update(
+    tx: &mut toasty::Transaction<'_>,
+    incident_id: i64,
+    status: IncidentStatus,
+    result: CheckResultRecord,
+) -> Result<()> {
+    let check = stored_check(result)?;
+    let body = check.error.as_deref().unwrap_or("Check failed.");
+    let json = serde_json::to_string(&check)
+        .map_err(|e| StoreError::corrupt("incident_updates.check_json", e))?;
+    toasty::create!(IncidentUpdateRecord {
+        incident_id: incident_id,
+        status: status.as_str(),
+        body: body,
+        check_json: Some(json),
+        created_at: check.checked_at,
     })
     .exec(&mut *tx)
     .await?;
@@ -353,7 +424,6 @@ pub(crate) async fn resolve_auto(
     tx: &mut toasty::Transaction<'_>,
     monitor_id: i64,
     name: &str,
-    downtime_secs: Option<i64>,
     at: Timestamp,
 ) -> Result<()> {
     let Some(incident) = open_auto_incident(tx, monitor_id).await? else {
@@ -364,10 +434,8 @@ pub(crate) async fn resolve_auto(
         .resolved_at(Some(at))
         .exec(&mut *tx)
         .await?;
-    let body = match downtime_secs {
-        Some(secs) => format!("{name} recovered after {}.", format_duration(secs)),
-        None => format!("{name} recovered."),
-    };
+    let secs = at.duration_since(incident.started_at).as_secs();
+    let body = format!("{name} recovered after {}.", format_duration(secs));
     add_update(tx, incident.id, IncidentStatus::Resolved, &body, at).await
 }
 
@@ -375,11 +443,15 @@ async fn open_auto_incident(
     tx: &mut toasty::Transaction<'_>,
     monitor_id: i64,
 ) -> Result<Option<IncidentRecord>> {
-    Ok(
-        IncidentRecord::filter(IncidentRecord::fields().monitor_id().eq(Some(monitor_id)))
-            .exec(&mut *tx)
-            .await?
-            .into_iter()
-            .find(|r| r.kind == IncidentKind::Auto.as_str() && r.resolved_at.is_none()),
+    let fields = IncidentRecord::fields();
+    Ok(IncidentRecord::filter(
+        fields
+            .monitor_id()
+            .eq(Some(monitor_id))
+            .and(fields.kind().eq(IncidentKind::Auto.as_str()))
+            .and(fields.resolved_at().is_none()),
     )
+    .first()
+    .exec(&mut *tx)
+    .await?)
 }

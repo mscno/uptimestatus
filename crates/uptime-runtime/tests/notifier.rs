@@ -156,6 +156,7 @@ async fn went_down(store: &Store, monitor: MonitorId, seconds: i64) {
                 latency: None,
                 status_code: None,
                 reason: None,
+                response_body: None,
             },
             runtime: Runtime {
                 state: MonitorState::Down,

@@ -84,7 +84,7 @@ impl Default for CheckPolicy {
             interval: Duration::from_secs(60),
             retry_interval: Duration::from_secs(60),
             timeout: Duration::from_secs(10),
-            retries: 0,
+            retries: 1,
             invert: false,
             degraded_after: None,
             resend_every: 0,

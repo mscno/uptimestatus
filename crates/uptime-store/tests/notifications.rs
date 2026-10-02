@@ -50,6 +50,7 @@ async fn record(
                     kind: FailureKind::Refused,
                     message: "connection refused".into(),
                 }),
+                response_body: None,
             },
             runtime: Runtime {
                 state,

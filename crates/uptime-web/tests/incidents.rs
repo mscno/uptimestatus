@@ -397,3 +397,73 @@ async fn admins_schedule_recurring_maintenance() {
         .await;
     too_long.assert_contains("shorter than its repeat interval");
 }
+
+#[tokio::test]
+async fn automatic_incidents_are_public_while_check_diagnostics_stay_in_admin() {
+    let app = setup().await;
+    let store = app.db.store();
+    let monitor = store
+        .list_monitors()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|m| m.spec.key.as_str() == "api")
+        .unwrap();
+    let start = Timestamp::now();
+    for (offset, state, failures) in [
+        (0, uptime_domain::MonitorState::Pending, 1),
+        (60, uptime_domain::MonitorState::Down, 2),
+    ] {
+        let at = start + SignedDuration::from_secs(offset);
+        store
+            .record_check(&uptime_store::CheckRecord {
+                monitor_id: monitor.id,
+                scheduled_for: at,
+                checked_at: at,
+                verdict: uptime_domain::Verdict {
+                    health: uptime_domain::Health::Down,
+                    latency: None,
+                    status_code: Some(503),
+                    reason: Some(uptime_domain::DownReason::UnexpectedStatus(503)),
+                    response_body: Some("<script>private-upstream-response</script>".into()),
+                },
+                runtime: uptime_domain::Runtime {
+                    state,
+                    consecutive_failures: failures,
+                },
+                transition: (failures == 2).then_some(uptime_domain::Transition::WentDown),
+                cert: None,
+                next_run_at: at + SignedDuration::from_secs(60),
+                region: "private-region".into(),
+            })
+            .await
+            .unwrap();
+    }
+    let incident = store.list_incidents(10).await.unwrap().remove(0);
+    let mut client = app.client();
+    for url in [
+        "/s/platform".to_owned(),
+        "/s/platform/incidents".to_owned(),
+        format!("/s/platform/incidents/{}", incident.id),
+        "/s/platform/feed.atom".to_owned(),
+    ] {
+        let reply = client.get(&url).await;
+        assert_eq!(reply.status, StatusCode::OK);
+        reply.assert_contains("api service is down");
+        assert!(!reply.body.contains("private-upstream-response"));
+        assert!(!reply.body.contains("private-region"));
+        assert!(!reply.body.contains("unexpected status 503"));
+    }
+    let mut admin = app.signed_in("alice", 1001).await;
+    let detail = admin
+        .get(&format!("/admin/incidents/{}", incident.id))
+        .await;
+    detail.assert_contains("HTTP 503");
+    detail.assert_contains("private-upstream-response");
+    assert!(
+        !detail
+            .body
+            .contains("<script>private-upstream-response</script>")
+    );
+    detail.assert_contains("private-region");
+}

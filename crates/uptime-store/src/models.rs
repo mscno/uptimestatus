@@ -88,6 +88,7 @@ pub struct CheckResultRecord {
     pub status_code: Option<i32>,
     pub error_kind: Option<String>,
     pub error: Option<String>,
+    pub response_body: Option<String>,
     pub region: String,
 }
 
@@ -351,6 +352,8 @@ pub struct IncidentUpdateRecord {
     pub incident_id: i64,
     pub status: String,
     pub body: String,
+    /// Serialized check snapshot retained beyond raw check retention.
+    pub check_json: Option<String>,
     pub created_at: Timestamp,
 }
 

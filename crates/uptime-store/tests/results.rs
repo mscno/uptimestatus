@@ -17,6 +17,7 @@ fn up_verdict(latency_ms: u64) -> Verdict {
         latency: Some(Duration::from_millis(latency_ms)),
         status_code: Some(200),
         reason: None,
+        response_body: None,
     }
 }
 
@@ -29,6 +30,7 @@ fn timeout_verdict() -> Verdict {
             kind: FailureKind::Timeout,
             message: "timed out after 10s".into(),
         }),
+        response_body: None,
     }
 }
 

@@ -13,7 +13,7 @@ use topcoat::{
     router::{error::not_found, header, page, path_param, query_params},
     view::{View, component, view},
 };
-use uptime_domain::{IncidentKind, MonitorId};
+use uptime_domain::MonitorId;
 use uptime_store::{Incident, Maintenance};
 
 use super::{
@@ -335,13 +335,17 @@ path_param!(incident_id: i64, error = not_found);
 pub(crate) async fn incident_page(cx: &Cx) -> Result<impl View> {
     let view = load(cx, path_param::<Slug>(cx)).await?;
     let id = *path_param::<IncidentId>(cx)?;
-    let incident = app(cx).store.incident(id).await?.ok_or_else(not_found)?;
+    let incident = app(cx)
+        .store
+        .public_incident(id)
+        .await?
+        .ok_or_else(not_found)?;
     let on_page = incident
         .monitor_ids
         .iter()
         .any(|id| view.monitor_ids.contains(id));
-    // Automatic incidents and other pages' incidents stay private.
-    if incident.kind != IncidentKind::Manual || !on_page {
+    // Only incidents affecting this page are visible here.
+    if !on_page {
         return Err(not_found().into());
     }
     let base = base(cx, &view.slug);

@@ -12,6 +12,9 @@ pub enum Observation {
         latency: Duration,
         /// HTTP status; `None` for non-HTTP checks.
         status_code: Option<u16>,
+        /// Bounded response text for failure diagnostics.
+        #[serde(default)]
+        response_body: Option<String>,
         /// Whether the keyword was found; `None` when no keyword rule is set.
         keyword_found: Option<bool>,
         /// Whether the JSON rule matched; `None` when no JSON rule is set.
@@ -19,6 +22,14 @@ pub enum Observation {
         json_matched: Option<bool>,
         /// HTTPS: when the server's certificate expires.
         cert_expires_at: Option<jiff::Timestamp>,
+    },
+    /// HTTP headers arrived, but reading the response failed or timed out.
+    FailedResponse {
+        latency: Duration,
+        status_code: u16,
+        response_body: String,
+        kind: FailureKind,
+        message: String,
     },
     /// The probe could not get an answer.
     Failed { kind: FailureKind, message: String },

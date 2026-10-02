@@ -33,6 +33,7 @@ pub fn observe(last: Option<&Push>, now: Timestamp, interval: Duration) -> Obser
                     keyword_found: None,
                     json_matched: None,
                     cert_expires_at: None,
+                    response_body: None,
                 }
             } else {
                 Observation::Failed {
@@ -80,7 +81,9 @@ mod tests {
 
     fn kind(observation: &Observation) -> Option<FailureKind> {
         match observation {
-            Observation::Failed { kind, .. } => Some(*kind),
+            Observation::Failed { kind, .. } | Observation::FailedResponse { kind, .. } => {
+                Some(*kind)
+            }
             Observation::Responded { .. } => None,
         }
     }
@@ -96,6 +99,7 @@ mod tests {
                 keyword_found: None,
                 json_matched: None,
                 cert_expires_at: None,
+                response_body: None,
             }
         );
     }

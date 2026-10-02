@@ -44,10 +44,11 @@ async fn record(
                 latency: Some(Duration::from_millis(5)),
                 status_code: None,
                 reason: None,
+                response_body: None,
             },
             runtime: Runtime {
                 state,
-                consecutive_failures: 0,
+                consecutive_failures: if state == MonitorState::Down { 2 } else { 0 },
             },
             transition,
             cert: None,
@@ -172,7 +173,7 @@ async fn going_down_opens_and_recovering_resolves_an_automatic_incident() {
 }
 
 #[tokio::test]
-async fn status_pages_see_recent_manual_incidents_for_their_monitors() {
+async fn status_pages_see_recent_incidents_for_their_monitors() {
     let db = TestDb::new().await;
     let store = db.store();
     let api = store.create_monitor(&tcp_spec("api"), t(0)).await.unwrap();
@@ -209,7 +210,11 @@ async fn status_pages_see_recent_manual_incidents_for_their_monitors() {
         .into_iter()
         .map(|i| i.title)
         .collect();
-    assert_eq!(seen, ["Open"], "no old, automatic or unrelated incidents");
+    assert_eq!(
+        seen,
+        ["TCP api is down", "Open"],
+        "no old or unrelated incidents"
+    );
 
     let with_history: Vec<String> = store
         .public_incidents(&[api.id, web.id], t(0))
@@ -218,7 +223,7 @@ async fn status_pages_see_recent_manual_incidents_for_their_monitors() {
         .into_iter()
         .map(|i| i.title)
         .collect();
-    assert_eq!(with_history.len(), 3);
+    assert_eq!(with_history.len(), 4);
     assert!(open.id > 0);
 }
 
@@ -236,7 +241,7 @@ async fn incidents_can_be_deleted() {
 }
 
 #[tokio::test]
-async fn incident_history_is_manual_incidents_started_in_a_range() {
+async fn incident_history_includes_automatic_incidents_started_in_a_range() {
     let db = TestDb::new().await;
     let store = db.store();
     let api = store.create_monitor(&tcp_spec("api"), t(0)).await.unwrap();
@@ -253,7 +258,7 @@ async fn incident_history_is_manual_incidents_started_in_a_range() {
             .await
             .unwrap();
     }
-    // An automatic incident inside the range stays private.
+    // An automatic incident inside the range is public too.
     record(
         store,
         api.id,
@@ -271,7 +276,11 @@ async fn incident_history_is_manual_incidents_started_in_a_range() {
         .map(|i| i.title)
         .collect();
 
-    assert_eq!(titles, ["Second", "First"], "newest first, [from, to)");
+    assert_eq!(
+        titles,
+        ["Second", "TCP api is down", "First"],
+        "newest first, [from, to)"
+    );
     assert!(
         store
             .incident_history(&[], t(0), t(1000))

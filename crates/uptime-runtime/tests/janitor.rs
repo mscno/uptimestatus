@@ -41,6 +41,7 @@ async fn record(store: &Store, id: MonitorId, at: Timestamp) {
             latency: None,
             status_code: None,
             reason: None,
+            response_body: None,
         },
         runtime: Runtime {
             state: MonitorState::Up,

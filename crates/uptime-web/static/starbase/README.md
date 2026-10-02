@@ -13,6 +13,6 @@ Rocket web components and design tokens from [Starbase](https://starbase.zweiund
 | `css/daylight.css` | the `daylight` block of `static/css/themes/showcase.css` + the site's `theme/auto.css` | concatenated |
 | `fonts/` | `static/fonts/` | none |
 
-Components import only `datastar`, which the page's import map points at our Datastar Pro
+Components import only `datastar`, which the page's import map points at the vendored Datastar + Rocket
 bundle (`/static/datastar.js?v=…`). To update: copy newer builds over these files and keep
 this table current.

@@ -262,6 +262,7 @@ async fn the_detail_page_shows_recent_checks() {
                 latency: Some(Duration::from_millis(87)),
                 status_code: None,
                 reason: None,
+                response_body: None,
             },
             runtime: Runtime {
                 state: MonitorState::Up,
@@ -538,6 +539,7 @@ async fn the_dashboard_shows_groups_as_a_tree_with_their_worst_state() {
                 latency: None,
                 status_code: None,
                 reason: None,
+                response_body: None,
             },
             runtime: Runtime {
                 state: MonitorState::Down,

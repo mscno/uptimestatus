@@ -99,6 +99,16 @@ async fn monitor_toggles(
 pub(crate) async fn incidents_page(cx: &Cx) -> Result<impl View> {
     let admin = require_admin(cx).await?;
     let incidents = app(cx).store.list_incidents(100).await?;
+    let rows: Vec<_> = incidents
+        .into_iter()
+        .map(|incident| {
+            (
+                format!("/admin/incidents/{}/delete", incident.id),
+                format!("Delete {}?", incident.title),
+                incident,
+            )
+        })
+        .collect();
     let now = Timestamp::now();
     Ok(view! {
         admin_shell(title: "Incidents", admin: &admin, section: "incidents",
@@ -107,7 +117,7 @@ pub(crate) async fn incidents_page(cx: &Cx) -> Result<impl View> {
                 <span class="spacer"></span>
                 <a class="btn btn-primary" href="/admin/incidents/new">"Declare incident"</a>
             </div>
-            if incidents.is_empty() {
+            if rows.is_empty() {
                 <div class="card empty">
                     <p><strong>"No incidents."</strong></p>
                     <p>"Monitors that go down open one automatically; declare one to tell visitors what is going on."</p>
@@ -115,9 +125,9 @@ pub(crate) async fn incidents_page(cx: &Cx) -> Result<impl View> {
             } else {
                 <div class="card table-wrap">
                     <table class="list">
-                        <thead><tr><th>"Incident"</th><th>"Status"</th><th>"Impact"</th><th>"Started"</th><th class="hide-sm">"Duration"</th><th class="hide-sm">"Shown"</th></tr></thead>
+                        <thead><tr><th>"Incident"</th><th>"Status"</th><th>"Impact"</th><th>"Started"</th><th class="hide-sm">"Duration"</th><th class="hide-sm">"Shown"</th><th>"Actions"</th></tr></thead>
                         <tbody>
-                            for incident in &incidents {
+                            for (delete_url, delete_heading, incident) in &rows {
                                 <tr>
                                     <td class="name-cell"><a href=(format!("/admin/incidents/{}", incident.id))>(incident.title.as_str())</a></td>
                                     <td><span class=(status_pill(incident.status))>(incident.status.label())</span></td>
@@ -125,6 +135,11 @@ pub(crate) async fn incidents_page(cx: &Cx) -> Result<impl View> {
                                     <td class="small when">ago(at: incident.started_at, now: now)</td>
                                     <td class="small hide-sm">(fmt::duration(incident.resolved_at.unwrap_or(now).duration_since(incident.started_at).unsigned_abs()))</td>
                                     <td class="small muted hide-sm">"status pages"</td>
+                                    <td class="row-actions">
+                                        delete_button(action: delete_url,
+                                            heading: delete_heading,
+                                            body: "It disappears from status pages and the incident history.")
+                                    </td>
                                 </tr>
                             }
                         </tbody>

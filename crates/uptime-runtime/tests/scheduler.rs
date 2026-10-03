@@ -228,7 +228,10 @@ async fn failures_retry_then_go_down_then_recover() {
         .await
         .unwrap();
     let clock = ManualClock::at(start);
-    let probe = ScriptedProbe::new(vec![refused(), refused(), refused(), ok(5)], ok(5));
+    let probe = ScriptedProbe::new(
+        vec![refused(), refused(), refused(), refused(), ok(5)],
+        ok(5),
+    );
     let scheduler = scheduler(db.store(), probe, &clock, 4);
     let mut events = scheduler.events().subscribe();
 
@@ -238,27 +241,49 @@ async fn failures_retry_then_go_down_then_recover() {
         state(db.store(), monitor.id).await,
         (MonitorState::Pending, 1, plus(start, 20))
     );
+    assert!(db.store().list_incidents(10).await.unwrap().is_empty());
     clock.set(plus(start, 20));
     scheduler.run_due().await.unwrap();
     assert_eq!(
         state(db.store(), monitor.id).await,
         (MonitorState::Pending, 2, plus(start, 40))
     );
+    assert!(db.store().list_incidents(10).await.unwrap().is_empty());
 
-    // ...then DOWN, back on the normal interval (60s).
+    // The original check and both retries failed: DOWN, still checking every 20s.
     clock.set(plus(start, 40));
     scheduler.run_due().await.unwrap();
     assert_eq!(
         state(db.store(), monitor.id).await,
-        (MonitorState::Down, 3, plus(start, 100))
+        (MonitorState::Down, 3, plus(start, 60))
     );
+    let incident = db.store().list_incidents(10).await.unwrap().remove(0);
+    assert_eq!(incident.started_at, plus(start, 40));
+    assert_eq!(incident.updates.len(), 4);
 
-    // Recovery.
-    clock.set(plus(start, 100));
+    clock.set(plus(start, 60));
     scheduler.run_due().await.unwrap();
     assert_eq!(
         state(db.store(), monitor.id).await,
-        (MonitorState::Up, 0, plus(start, 160))
+        (MonitorState::Down, 4, plus(start, 80))
+    );
+    assert_eq!(db.store().list_incidents(10).await.unwrap().len(), 1);
+
+    // Recovery resolves the incident and restores the normal interval (60s).
+    clock.set(plus(start, 80));
+    scheduler.run_due().await.unwrap();
+    assert_eq!(
+        state(db.store(), monitor.id).await,
+        (MonitorState::Up, 0, plus(start, 140))
+    );
+    assert_eq!(
+        db.store()
+            .incident(incident.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .resolved_at,
+        Some(plus(start, 80))
     );
 
     let mut transitions = Vec::new();
@@ -710,18 +735,22 @@ async fn a_successful_retry_does_not_open_an_incident() {
     let start = base_time();
     let monitor = db
         .store()
-        .create_monitor(&spec("transient", 1), start)
+        .create_monitor(&spec("transient", 2), start)
         .await
         .unwrap();
     let clock = ManualClock::at(start);
     let scheduler = scheduler(
         db.store(),
-        ScriptedProbe::new(vec![refused(), ok(1)], ok(1)),
+        ScriptedProbe::new(vec![refused(), refused(), ok(1)], ok(1)),
         &clock,
         4,
     );
     scheduler.run_due().await.unwrap();
     clock.set(plus(start, 20));
+    scheduler.run_due().await.unwrap();
+    assert_eq!(state(db.store(), monitor.id).await.0, MonitorState::Pending);
+    assert!(db.store().list_incidents(10).await.unwrap().is_empty());
+    clock.set(plus(start, 40));
     scheduler.run_due().await.unwrap();
     assert_eq!(state(db.store(), monitor.id).await.0, MonitorState::Up);
     assert!(db.store().list_incidents(10).await.unwrap().is_empty());
@@ -739,7 +768,7 @@ async fn incidents_require_two_failures_even_when_retries_are_disabled() {
     let scheduler = scheduler(db.store(), ScriptedProbe::new(vec![], refused()), &clock, 4);
     scheduler.run_due().await.unwrap();
     assert!(db.store().list_incidents(10).await.unwrap().is_empty());
-    clock.set(plus(start, 60));
+    clock.set(plus(start, 20));
     scheduler.run_due().await.unwrap();
     let incidents = db.store().list_incidents(10).await.unwrap();
     assert_eq!(incidents.len(), 1);

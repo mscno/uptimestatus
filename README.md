@@ -11,9 +11,11 @@ or a Docker container, with SQLite, PostgreSQL or Turso for storage.
 - HTTP(S), TCP, DNS and push heartbeat monitors, with configurable timeouts and retries.
   HTTP checks support status ranges, keywords, JSON assertions, custom requests and auth;
   TCP checks can use TLS and send/expect rules.
-- Automatic incidents after confirmed failures, with at least two failed attempts. New
-  monitors retry once by default. Recovery resolves the incident; the admin timeline keeps
-  errors, statuses and response excerpts, including the original attempt and retries.
+- Automatic incidents after the original check and all configured retries fail, with at least
+  two failed attempts. Monitors retry once by default. Checks continue at the retry interval
+  while down, returning to the normal interval on recovery. Recovery resolves the incident;
+  the admin timeline keeps errors, statuses and response excerpts, including the original
+  attempt and retries.
 - Public status pages with current and previous incidents, 90-day uptime bars, response-time
   charts, Atom feeds, custom domains, logos and a choice of pixel or clean styling.
 - Slack, Discord and signed webhook alerts, with retries, quiet hours and escalation delays.

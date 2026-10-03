@@ -205,8 +205,8 @@ pub(crate) async fn local_time(at: jiff::Timestamp) -> Result<impl View> {
 #[component]
 pub(crate) async fn delete_button(action: &str, heading: &str, body: &str) -> Result<impl View> {
     Ok(view! {
-        <button class="btn btn-danger" type="button" data-on:click="$_confirm.show()">"Delete"</button>
-        <sb-modal data-ref:_confirm="" heading=(heading)>
+        <button class="btn btn-danger" type="button" data-on:click="el.nextElementSibling.show()">"Delete"</button>
+        <sb-modal heading=(heading)>
             <p>(body)</p>
             <button slot="footer" class="btn" type="button" data-sb-close="cancel">"Cancel"</button>
             <form slot="footer" method="post" action=(action)>

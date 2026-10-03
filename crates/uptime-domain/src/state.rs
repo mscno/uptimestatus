@@ -94,7 +94,7 @@ pub enum Transition {
 pub struct Step {
     pub runtime: Runtime,
     pub transition: Option<Transition>,
-    /// How long until the next check (interval, or retry interval while PENDING).
+    /// How long until the next check (retry interval while PENDING or DOWN).
     pub next_in: Duration,
 }
 
@@ -102,14 +102,18 @@ pub struct Step {
 ///
 /// `retries = N` means failures 1..=N are PENDING and failure N+1 is DOWN.
 pub fn apply(prev: Runtime, policy: &CheckPolicy, health: Health, in_maintenance: bool) -> Step {
-    let settled = |runtime, transition| Step {
+    let scheduled = |runtime: Runtime, transition| Step {
+        next_in: if matches!(runtime.state, MonitorState::Pending | MonitorState::Down) {
+            policy.retry_interval
+        } else {
+            policy.interval
+        },
         runtime,
         transition,
-        next_in: policy.interval,
     };
 
     if in_maintenance {
-        return settled(
+        return scheduled(
             Runtime {
                 state: MonitorState::Maintenance,
                 consecutive_failures: 0,
@@ -127,7 +131,7 @@ pub fn apply(prev: Runtime, policy: &CheckPolicy, health: Health, in_maintenance
                 MonitorState::Degraded
             };
             let transition = was_down.then_some(Transition::Recovered);
-            settled(
+            scheduled(
                 Runtime {
                     state,
                     consecutive_failures: 0,
@@ -142,7 +146,7 @@ pub fn apply(prev: Runtime, policy: &CheckPolicy, health: Health, in_maintenance
                 let resend = policy.resend_every > 0
                     && since_down > 0
                     && since_down.is_multiple_of(policy.resend_every);
-                settled(
+                scheduled(
                     Runtime {
                         state: MonitorState::Down,
                         consecutive_failures: failures,
@@ -150,16 +154,15 @@ pub fn apply(prev: Runtime, policy: &CheckPolicy, health: Health, in_maintenance
                     resend.then_some(Transition::Resend),
                 )
             } else if failures <= policy.retries {
-                Step {
-                    runtime: Runtime {
+                scheduled(
+                    Runtime {
                         state: MonitorState::Pending,
                         consecutive_failures: failures,
                     },
-                    transition: None,
-                    next_in: policy.retry_interval,
-                }
+                    None,
+                )
             } else {
-                settled(
+                scheduled(
                     Runtime {
                         state: MonitorState::Down,
                         consecutive_failures: failures,
@@ -238,11 +241,11 @@ mod tests {
     // retries = 2: failures 1 and 2 are PENDING (retry cadence), failure 3 is DOWN.
     #[case(rt(Up, 0), step(Pending, 1, None, RETRY))]
     #[case(rt(Pending, 1), step(Pending, 2, None, RETRY))]
-    #[case(rt(Pending, 2), step(Down, 3, Some(Transition::WentDown), INTERVAL))]
+    #[case(rt(Pending, 2), step(Down, 3, Some(Transition::WentDown), RETRY))]
     #[case(rt(Unknown, 0), step(Pending, 1, None, RETRY))]
     #[case(rt(Degraded, 0), step(Pending, 1, None, RETRY))]
     // Already DOWN: stays DOWN quietly (resend disabled).
-    #[case(rt(Down, 3), step(Down, 4, None, INTERVAL))]
+    #[case(rt(Down, 3), step(Down, 4, None, RETRY))]
     fn failures_with_retries(#[case] prev: Runtime, #[case] expected: Step) {
         assert_eq!(apply(prev, &policy(2, 0), Health::Down, false), expected);
     }
@@ -251,7 +254,7 @@ mod tests {
     fn zero_retries_goes_down_on_first_failure() {
         assert_eq!(
             apply(rt(Up, 0), &policy(0, 0), Health::Down, false),
-            step(Down, 1, Some(Transition::WentDown), INTERVAL)
+            step(Down, 1, Some(Transition::WentDown), RETRY)
         );
     }
 

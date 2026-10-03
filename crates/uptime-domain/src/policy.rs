@@ -8,10 +8,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CheckPolicy {
-    /// How often to check while UP or DOWN.
+    /// How often to check while healthy or in maintenance.
     #[serde(with = "humantime_serde")]
     pub interval: Duration,
-    /// How often to check while PENDING (unconfirmed failure).
+    /// How often to check while PENDING or DOWN, until recovery.
     #[serde(with = "humantime_serde")]
     pub retry_interval: Duration,
     /// Whole-check deadline.

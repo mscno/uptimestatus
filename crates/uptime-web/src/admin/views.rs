@@ -348,7 +348,7 @@ pub(crate) async fn monitor_form(
                     text_field(name: "interval", label: "Interval", value: &form.interval, errors: errors, hint: "How often to check, e.g. 30s or 1m.")
                     text_field(name: "timeout", label: "Timeout", value: &form.timeout, errors: errors, hint: "e.g. 10s; at most 80% of the interval.")
                     text_field(name: "retries", label: "Retries", value: &form.retries, errors: errors, hint: "Failures tolerated before DOWN.")
-                    text_field(name: "retry_interval", label: "Retry interval", value: &form.retry_interval, errors: errors, hint: "Cadence while a failure is unconfirmed.")
+                    text_field(name: "retry_interval", label: "Retry interval", value: &form.retry_interval, errors: errors, hint: "Cadence while pending or down, until recovery.")
                     text_field(name: "degraded_after", label: "Degraded after", value: &form.degraded_after, errors: errors,
                         placeholder: "800ms",
                         hint: "Optional. Responses slower than this count as DEGRADED, e.g. 800ms, 1.5s or 2s; keep it below the timeout. Blank: never degraded.")

@@ -220,13 +220,69 @@ async fn admins_declare_update_and_resolve_incidents() {
             .status,
         IncidentStatus::Resolved
     );
+    let other = app
+        .db
+        .store()
+        .declare_incident(
+            &NewIncident {
+                title: "Database outage".into(),
+                impact: Impact::Major,
+                status: IncidentStatus::Investigating,
+                message: "Investigating the database.".into(),
+                monitors: vec!["db".parse().unwrap()],
+            },
+            Timestamp::now(),
+        )
+        .await
+        .unwrap();
     admin
         .get("/admin/incidents")
         .await
+        .assert_contains("API outage")
+        .assert_contains("Delete API outage?")
+        .assert_contains("Delete Database outage?")
+        .assert_contains(&format!(r#"action="/admin/incidents/{}/delete""#, other.id))
+        .assert_contains(&format!(r#"action="{url}/delete""#));
+
+    let history_url = "/s/platform/incidents";
+    app.client()
+        .get(history_url)
+        .await
         .assert_contains("API outage");
+    let denied = app.client().post_form(&format!("{url}/delete"), &[]).await;
+    assert_eq!(denied.location(), Some("/login"));
+    assert!(
+        app.db
+            .store()
+            .incident(incident.id)
+            .await
+            .unwrap()
+            .is_some()
+    );
 
     let deleted = admin.post_form(&format!("{url}/delete"), &[]).await;
     assert_eq!(deleted.location(), Some("/admin/incidents"));
+    assert!(app.db.store().incident(other.id).await.unwrap().is_some());
+    assert!(
+        app.db
+            .store()
+            .incident(incident.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        !app.client()
+            .get(history_url)
+            .await
+            .body
+            .contains("API outage")
+    );
+    assert_eq!(admin.get(&url).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        admin.post_form(&format!("{url}/delete"), &[]).await.status,
+        StatusCode::NOT_FOUND
+    );
 }
 
 #[tokio::test]
@@ -466,4 +522,24 @@ async fn automatic_incidents_are_public_while_check_diagnostics_stay_in_admin() 
             .contains("<script>private-upstream-response</script>")
     );
     detail.assert_contains("private-region");
+
+    let deleted = admin
+        .post_form(&format!("/admin/incidents/{}/delete", incident.id), &[])
+        .await;
+    assert_eq!(deleted.location(), Some("/admin/incidents"));
+    assert!(store.list_incidents(10).await.unwrap().is_empty());
+    for url in [
+        "/s/platform",
+        "/s/platform/incidents",
+        "/s/platform/feed.atom",
+    ] {
+        assert!(!client.get(url).await.body.contains("api service is down"));
+    }
+    assert_eq!(
+        client
+            .get(&format!("/s/platform/incidents/{}", incident.id))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
 }

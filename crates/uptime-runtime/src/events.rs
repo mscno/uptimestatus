@@ -81,3 +81,34 @@ impl Default for EventBus {
         Self::new(1024)
     }
 }
+
+/// Status pages (by slug) whose content changed without a check, such as a
+/// manual component status: open pages refresh at once.
+#[derive(Clone, Debug)]
+pub struct PageChanges {
+    sender: broadcast::Sender<String>,
+}
+
+impl PageChanges {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            sender: broadcast::Sender::new(capacity),
+        }
+    }
+
+    /// Tells this instance's watchers that the page `slug` changed.
+    pub fn notify(&self, slug: &str) {
+        // No subscribers is fine: nobody is watching right now.
+        let _ = self.sender.send(slug.to_owned());
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<String> {
+        self.sender.subscribe()
+    }
+}
+
+impl Default for PageChanges {
+    fn default() -> Self {
+        Self::new(64)
+    }
+}

@@ -23,6 +23,7 @@ async fn page(db: &TestDb, slug: &str) -> i64 {
         look: Default::default(),
         published: true,
         website: None,
+        custom_css: None,
         sections: vec![],
     };
     db.store().create_page(&spec).await.unwrap().id

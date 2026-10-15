@@ -83,6 +83,12 @@ impl UptimeWindows {
                 day.record(*state);
             }
         }
+        Self::from_tallies(now, &day, days)
+    }
+
+    /// From an already counted last 24 hours (`h24`) and day tallies (manual
+    /// components count seconds rather than checks).
+    pub fn from_tallies(now: Timestamp, h24: &Tally, days: &BTreeMap<Date, Tally>) -> Self {
         let today = now.to_zoned(TimeZone::UTC).date();
         let over = |n: i64| {
             let first = today.checked_sub((n - 1).days()).unwrap_or(today);
@@ -93,7 +99,7 @@ impl UptimeWindows {
             total.uptime()
         };
         Self {
-            h24: day.uptime(),
+            h24: h24.uptime(),
             d7: over(7),
             d30: over(30),
             d90: over(90),

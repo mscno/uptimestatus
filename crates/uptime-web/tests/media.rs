@@ -29,6 +29,7 @@ async fn setup() -> (TestApp, i64) {
                 url: "https://privatenpm.com/".parse().unwrap(),
                 label: None,
             }),
+            custom_css: None,
             sections: vec![],
         })
         .await

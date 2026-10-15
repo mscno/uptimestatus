@@ -23,6 +23,7 @@ async fn app_with_page() -> TestApp {
             look: Default::default(),
             published: true,
             website: None,
+            custom_css: None,
             sections: vec![],
         })
         .await

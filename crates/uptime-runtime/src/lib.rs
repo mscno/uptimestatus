@@ -14,7 +14,7 @@ pub use cluster::{Cluster, Handlers, Reload, apply as apply_bus_message};
 pub use domains::{
     BoxFuture, DomainProbe, DomainSink, DomainVerifier, VerifierConfig, VerifyDomain,
 };
-pub use events::{CheckCompleted, EventBus, Forwarder};
+pub use events::{CheckCompleted, EventBus, Forwarder, PageChanges};
 pub use janitor::Janitor;
 pub use notifier::{Deliver, Notifier, NotifierConfig};
 pub use probe::Probe;

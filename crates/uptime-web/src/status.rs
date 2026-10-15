@@ -8,7 +8,7 @@ mod feed;
 mod history;
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex, PoisonError},
     time::{Duration, Instant},
 };
@@ -20,21 +20,22 @@ use topcoat::{
     context::Cx,
     datastar::PatchElements,
     router::{
-        HeaderValue,
+        HeaderValue, StatusCode,
         content::{
             Json,
             sse::{Event, KeepAlive, Sse},
         },
         error::not_found,
         header, page, path_param,
-        request::extensions,
+        request::{extensions, headers},
+        response::{IntoResponse as _, Response},
         route,
     },
     view::{Child, View, ViewExt as _, component, view},
 };
 use uptime_domain::{
-    BarLevel, Impact, IncidentStatus, Look, MonitorState, PageStatus, Tally, Theme, bar_level,
-    page_status,
+    BarLevel, ComponentStatus, Impact, IncidentStatus, Look, MonitorState, PageStatus, Tally,
+    Theme, bar_level, component, page_status, uptime::UptimeWindows,
 };
 use uptime_store::Store;
 
@@ -79,6 +80,8 @@ pub(crate) struct StatusView {
     website: Option<(String, String)>,
     /// Monitors on the page: their checks trigger a live refresh.
     monitor_ids: Vec<uptime_domain::MonitorId>,
+    /// The page's custom CSS and a version for cache busting.
+    custom_css: Option<(Arc<str>, String)>,
 }
 
 #[derive(Clone, Debug)]
@@ -114,9 +117,17 @@ struct SectionView {
 
 #[derive(Clone, Debug)]
 struct ComponentView {
-    monitor_id: uptime_domain::MonitorId,
+    /// The component's key on the page (the monitor key for monitors).
+    key: String,
+    /// `None` for a manual component.
+    monitor_id: Option<uptime_domain::MonitorId>,
     name: String,
+    /// A manual component's description.
+    description: Option<String>,
+    /// The monitor's state; for manual components, the closest monitor state.
     state: MonitorState,
+    /// A manual component's status, or a monitor component's override.
+    manual: Option<ComponentStatus>,
     uptime: Option<f64>,
     bars: Vec<(Date, BarLevel, Option<f64>)>,
     metrics: Metrics,
@@ -212,7 +223,12 @@ async fn build(store: &Store, slug: &str) -> Result<Option<StatusView>> {
         recent.insert(*id, store.checks_since(*id, since).await?);
     }
 
+    // Manual statuses and overrides, by component key (oldest change first).
+    let changes = store.component_changes(page.id).await?;
+    let no_changes = Vec::new();
+    // Monitor states without an override, and what manual statuses say.
     let mut states = Vec::new();
+    let mut declared = Vec::new();
     let sections = page
         .spec
         .sections
@@ -223,40 +239,93 @@ async fn build(store: &Store, slug: &str) -> Result<Option<StatusView>> {
                 .components
                 .iter()
                 .filter_map(|component| {
-                    let overview = by_key.get(component.monitor.as_str())?;
-                    let state = overview.runtime.runtime.state;
-                    states.push(state);
-                    let days = tallies.get(&overview.monitor.id);
+                    let key = component.key().as_str();
+                    let history = changes.get(key).unwrap_or(&no_changes);
+                    // The status in force: a manual one, or an active override.
+                    let manual = history.last().and_then(|change| change.status);
+                    let overview = match component.monitor_key() {
+                        Some(monitor) => Some(*by_key.get(monitor.as_str())?),
+                        None => None,
+                    };
+                    match (manual, overview) {
+                        (Some(status), _) => declared.push(status.page_status()),
+                        (None, Some(overview)) => states.push(overview.runtime.runtime.state),
+                        (None, None) => {}
+                    }
+                    let monitor_days =
+                        overview.map(|o| tallies.get(&o.monitor.id).cloned().unwrap_or_default());
+                    let checks: Option<Vec<(Timestamp, MonitorState)>> = overview.map(|o| {
+                        recent
+                            .get(&o.monitor.id)
+                            .map_or(&[][..], Vec::as_slice)
+                            .iter()
+                            .map(|c| (c.checked_at, c.state_after))
+                            .collect()
+                    });
+                    // Without any manual history a monitor component is its
+                    // checks; otherwise days are blended (and in seconds).
+                    let manual_history = history.iter().any(|change| change.status.is_some());
+                    let days = if manual_history || overview.is_none() {
+                        component::component_days(
+                            monitor_days.as_ref(),
+                            history,
+                            first_day,
+                            today,
+                            now,
+                        )
+                    } else {
+                        monitor_days.clone().unwrap_or_default()
+                    };
+                    let level = if manual_history {
+                        component::component_bar_level
+                    } else {
+                        bar_level
+                    };
                     let mut total = Tally::default();
                     let bars = (0..DAYS)
                         .filter_map(|offset| first_day.checked_add(offset.days()).ok())
                         .map(|day| {
-                            let tally = days.and_then(|days| days.get(&day));
+                            let tally = days.get(&day);
                             if let Some(tally) = tally {
                                 total.merge(tally);
                             }
-                            (day, bar_level(tally), tally.and_then(Tally::uptime))
+                            (day, level(tally), tally.and_then(Tally::uptime))
                         })
                         .collect();
-                    let metrics = Metrics::build(
-                        now,
-                        Range::Day,
-                        recent
-                            .get(&overview.monitor.id)
-                            .map_or(&[][..], Vec::as_slice),
-                        days.unwrap_or(&BTreeMap::new()),
+                    let mut metrics = match overview {
+                        Some(overview) => Metrics::build(
+                            now,
+                            Range::Day,
+                            recent
+                                .get(&overview.monitor.id)
+                                .map_or(&[][..], Vec::as_slice),
+                            &days,
+                        ),
+                        None => Metrics::default(),
+                    };
+                    if manual_history || overview.is_none() {
+                        let last_day =
+                            component::component_last_day(checks.as_deref(), history, now);
+                        metrics.windows = UptimeWindows::from_tallies(now, &last_day, &days);
+                    }
+                    let name = component.label().map_or_else(
+                        || overview.map_or_else(|| key.to_owned(), |o| o.monitor.spec.name.clone()),
+                        str::to_owned,
                     );
                     Some(ComponentView {
-                        monitor_id: overview.monitor.id,
+                        key: key.to_owned(),
+                        monitor_id: overview.map(|o| o.monitor.id),
                         metrics,
-                        name: component
-                            .label
-                            .clone()
-                            .unwrap_or_else(|| overview.monitor.spec.name.clone()),
-                        state,
+                        name,
+                        description: component.description().map(str::to_owned),
+                        state: overview.map_or_else(
+                            || manual.map_or(MonitorState::Unknown, monitor_state),
+                            |o| o.runtime.runtime.state,
+                        ),
+                        manual,
                         uptime: total.uptime(),
                         bars,
-                        members: members_of(overview),
+                        members: overview.map(members_of).unwrap_or_default(),
                     })
                 })
                 .collect(),
@@ -316,12 +385,16 @@ async fn build(store: &Store, slug: &str) -> Result<Option<StatusView>> {
         theme: page.spec.theme,
         look: page.spec.look,
         published: page.spec.published,
-        status: incidents
-            .iter()
-            .filter(|i| i.resolved_at.is_none())
-            .fold(page_status(&states), |status, i| {
-                status.with_incident(i.impact)
-            }),
+        status: incidents.iter().filter(|i| i.resolved_at.is_none()).fold(
+            declared
+                .into_iter()
+                .fold(page_status(&states), PageStatus::worse),
+            |status, i| status.with_incident(i.impact),
+        ),
+        custom_css: page.spec.custom_css.map(|css| {
+            let version = crate::assets::short_hash(css.as_bytes());
+            (Arc::from(css), version)
+        }),
         updated_at: now,
         sections,
         maintenances,
@@ -331,6 +404,34 @@ async fn build(store: &Store, slug: &str) -> Result<Option<StatusView>> {
         website,
         monitor_ids: ids,
     }))
+}
+
+impl ComponentView {
+    /// The state in force: an override or manual status wins over checks.
+    fn shown_state(&self) -> MonitorState {
+        self.manual.map_or(self.state, monitor_state)
+    }
+}
+
+/// The monitor state closest to a manual status (for `summary.json` and badges).
+fn monitor_state(status: ComponentStatus) -> MonitorState {
+    match status {
+        ComponentStatus::Operational => MonitorState::Up,
+        ComponentStatus::Degraded => MonitorState::Degraded,
+        ComponentStatus::PartialOutage | ComponentStatus::MajorOutage => MonitorState::Down,
+        ComponentStatus::Maintenance => MonitorState::Maintenance,
+    }
+}
+
+/// A manual status as pill classes and text.
+pub(crate) fn component_pill(status: ComponentStatus) -> (&'static str, &'static str) {
+    let class = match status {
+        ComponentStatus::Operational => "pill pill-up",
+        ComponentStatus::Degraded => "pill pill-degraded",
+        ComponentStatus::PartialOutage | ComponentStatus::MajorOutage => "pill pill-down",
+        ComponentStatus::Maintenance => "pill pill-maintenance",
+    };
+    (class, status.label())
 }
 
 fn status_color(status: PageStatus) -> &'static str {
@@ -377,7 +478,11 @@ fn incident_pill(status: IncidentStatus, impact: Impact) -> &'static str {
 fn services(view: &StatusView, monitors: &[uptime_domain::MonitorId]) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     for component in view.sections.iter().flat_map(|s| &s.components) {
-        if monitors.contains(&component.monitor_id) && !names.contains(&component.name) {
+        if component
+            .monitor_id
+            .is_some_and(|id| monitors.contains(&id))
+            && !names.contains(&component.name)
+        {
             names.push(component.name.clone());
         }
     }
@@ -440,6 +545,11 @@ async fn frame(
     let accent = view.accent.clone().unwrap_or_default();
     let icon = view.favicon.clone().unwrap_or_default();
     let feed = format!("{base}/feed.atom");
+    let stylesheet = view
+        .custom_css
+        .as_ref()
+        .map(|(_, version)| format!("{base}/custom.css?v={version}"))
+        .unwrap_or_default();
     let tabs = [
         (Tab::Status, "Status", home(base).to_owned()),
         (
@@ -458,6 +568,7 @@ async fn frame(
             look: if clean { "clean" } else { "" },
             modules: if clean { &[] } else { &["starfield"] },
             feed: &feed,
+            stylesheet: &stylesheet,
             // Decorative, behind everything; the component pauses offscreen and
             // for visitors who prefer reduced motion. The clean look has none.
             if !clean {
@@ -544,14 +655,22 @@ async fn status_body(view: &StatusView, base: &str) -> Result<impl View> {
                 <section class="section">
                     <h2>(section.name.as_str())</h2>
                     for component in &section.components {
-                        <div class="component">
+                        <div class="component" data-component=(component.key.as_str())
+                            data-status=(component.manual.map_or_else(|| component.state.as_str(), ComponentStatus::as_str))>
                             <div class="component-head">
                                 <strong>(component.name.as_str())</strong>
                                 if let Some(uptime) = component.uptime {
                                     <span class="muted small">(fmt::uptime(uptime)) " uptime"</span>
                                 }
-                                state_pill(state: component.state)
+                                if let Some(status) = component.manual {
+                                    <span class=(component_pill(status).0)>(component_pill(status).1)</span>
+                                } else {
+                                    state_pill(state: component.state)
+                                }
                             </div>
+                            if let Some(description) = &component.description {
+                                <p class="component-description small muted">(description.as_str())</p>
+                            }
                             <div class="bars" role="img" aria-label=(format!("{} uptime over the last {DAYS} days", component.name))>
                                 for (day, level, uptime) in &component.bars {
                                     <span
@@ -702,9 +821,11 @@ pub(crate) async fn status_live(cx: &Cx) -> Result<Sse<impl Stream<Item = Result
     let monitors: HashSet<uptime_domain::MonitorId> = view.monitor_ids.iter().copied().collect();
     let cx = cx.clone();
     let receiver = app(&cx).events.subscribe();
+    let changes = app(&cx).page_changes.subscribe();
     let tick = tokio::time::interval_at(tokio::time::Instant::now() + LIVE_TICK, LIVE_TICK);
-    let events =
-        futures_util::stream::unfold((receiver, tick, cx), move |(mut receiver, mut tick, cx)| {
+    let events = futures_util::stream::unfold(
+        (receiver, changes, tick, cx),
+        move |(mut receiver, mut changes, mut tick, cx)| {
             let (slug, monitors) = (slug.clone(), monitors.clone());
             async move {
                 loop {
@@ -714,17 +835,86 @@ pub(crate) async fn status_live(cx: &Cx) -> Result<Sse<impl Stream<Item = Result
                             Ok(_) | Err(RecvError::Lagged(_)) => {}
                             Err(RecvError::Closed) => return None,
                         },
+                        // A manual status changed (here or on another instance).
+                        changed = changes.recv() => match changed {
+                            Ok(changed) if changed == slug => break,
+                            Ok(_) | Err(RecvError::Lagged(_)) => {}
+                            Err(RecvError::Closed) => return None,
+                        },
                         _ = tick.tick() => break,
                     }
                 }
                 // Several checks landing together make one refresh.
                 while receiver.try_recv().is_ok() {}
+                while changes.try_recv().is_ok() {}
                 let patch =
                     crate::logging::live_update(fresh_body(&cx, &slug).await, "status page");
-                Some((patch, (receiver, tick, cx)))
+                Some((patch, (receiver, changes, tick, cx)))
             }
-        });
+        },
+    );
     Ok(Sse::new(events).keep_alive(KeepAlive::new()))
+}
+
+/// A small public resource of a status page (a stylesheet, a badge) with an
+/// ETag: `304 Not Modified` when the client already has it. Drafts are never
+/// cached.
+pub(crate) fn cached(
+    cx: &Cx,
+    view: &StatusView,
+    version: &str,
+    content_type: &'static str,
+    max_age: u32,
+    body: String,
+) -> Result<Response> {
+    let etag = format!("\"{version}\"");
+    let cache = if view.published {
+        format!("public, max-age={max_age}")
+    } else {
+        "no-store".to_owned()
+    };
+    let fresh = headers(cx)
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|tag| matches!(tag.trim(), "*") || tag.trim() == etag)
+        });
+    if fresh {
+        return (
+            StatusCode::NOT_MODIFIED,
+            [(header::ETAG, etag), (header::CACHE_CONTROL, cache)],
+        )
+            .into_response(cx);
+    }
+    (
+        [
+            (header::CONTENT_TYPE, content_type.to_owned()),
+            (header::ETAG, etag),
+            (header::CACHE_CONTROL, cache),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
+        ],
+        body,
+    )
+        .into_response(cx)
+}
+
+/// The page's custom CSS, linked after its own styles (`?v=` changes with it).
+#[route(GET "/s/{slug}/custom.css")]
+pub(crate) async fn custom_css(cx: &Cx) -> Result<Response> {
+    let view = load(cx, path_param::<Slug>(cx)).await?;
+    let Some((css, version)) = &view.custom_css else {
+        return Err(not_found().into());
+    };
+    cached(
+        cx,
+        &view,
+        version,
+        "text/css; charset=utf-8",
+        3600,
+        css.to_string(),
+    )
 }
 
 /// Datastar refresh: re-renders `#status-body`.
@@ -775,8 +965,15 @@ struct SummaryPage {
 #[derive(Serialize)]
 struct SummaryComponent {
     section: String,
+    /// The component's key on the page.
+    key: String,
     name: String,
+    /// The state in force: a manual status or override maps to the closest
+    /// monitor state.
     status: MonitorState,
+    /// A manual component's status, or a monitor component's override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    manual_status: Option<ComponentStatus>,
     uptime_90d: Option<f64>,
 }
 
@@ -797,8 +994,10 @@ pub(crate) async fn summary_json(cx: &Cx) -> Result<Json<Summary>> {
             .flat_map(|section| {
                 section.components.iter().map(|component| SummaryComponent {
                     section: section.name.clone(),
+                    key: component.key.clone(),
                     name: component.name.clone(),
-                    status: component.state,
+                    status: component.shown_state(),
+                    manual_status: component.manual,
                     uptime_90d: component.uptime,
                 })
             })

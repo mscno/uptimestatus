@@ -42,17 +42,12 @@ fn page(slug: &str, published: bool) -> PageSpec {
         look: Default::default(),
         published,
         website: None,
+        custom_css: None,
         sections: vec![SectionSpec {
             name: "Core".into(),
             components: vec![
-                ComponentSpec {
-                    monitor: "api".parse().unwrap(),
-                    label: Some("Public API".into()),
-                },
-                ComponentSpec {
-                    monitor: "web".parse().unwrap(),
-                    label: None,
-                },
+                ComponentSpec::of_monitor("api".parse().unwrap(), Some("Public API".into())),
+                ComponentSpec::of_monitor("web".parse().unwrap(), None),
             ],
         }],
     }
@@ -408,7 +403,7 @@ async fn admins_list_create_edit_and_delete_pages() {
             .spec
             .sections[0]
             .components[0]
-            .monitor
+            .key()
             .as_str(),
         "web"
     );

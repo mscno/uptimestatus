@@ -130,6 +130,11 @@ fn hash(bytes: &[u8]) -> String {
     format!("{fnv:016x}")
 }
 
+/// A content version for cache busting and ETags (not a security hash).
+pub(crate) fn short_hash(bytes: &[u8]) -> String {
+    hash(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

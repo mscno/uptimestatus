@@ -60,6 +60,7 @@ pub(crate) async fn pages_list(cx: &Cx) -> Result<impl View> {
                                     <td>(if page.published { "Published" } else { "Draft" })</td>
                                     <td class="row-actions">
                                         <a href=(format!("/admin/pages/{}", page.id))>"Edit"</a>
+                                        <a href=(format!("/admin/pages/{}/components", page.id))>"Components"</a>
                                         <a href=(format!("/admin/pages/new?from={}", page.id))>"Duplicate"</a>
                                     </td>
                                 </tr>
@@ -131,13 +132,18 @@ async fn page_editor(
             </fieldset>
             <fieldset>
                 <legend>"Layout"</legend>
-                text_area(name: "layout", label: "Sections and monitors", value: &form.layout, errors: errors,
-                    hint: "`## Section` starts a section; each line below is a monitor key, optionally `key | Display name`.")
+                text_area(name: "layout", label: "Sections and components", value: &form.layout, errors: errors,
+                    hint: "`## Section` starts a section; each line below is a monitor key, optionally `key | Display name`. A component without a monitor, whose status you set by hand: `manual:key | Display name | Description`.")
                 <p class="small muted">"Monitor keys: "
                     if monitor_keys.is_empty() { "none yet — create monitors first." } else {
                         for key in monitor_keys { <code>(key.as_str())</code> " " }
                     }
                 </p>
+            </fieldset>
+            <fieldset>
+                <legend>"Custom CSS"</legend>
+                text_area(name: "custom_css", label: "Stylesheet", value: &form.custom_css, errors: errors,
+                    hint: "Optional, up to 64 KiB. Loaded after the page's own styles; target the hooks listed in the README (e.g. `.status-header`, `[data-component=\"api\"]`, `--accent`). No `javascript:` URLs, and `@import` only from https.")
             </fieldset>
             <div class="actions">
                 <button class="btn btn-primary" type="submit">"Save page"</button>
@@ -200,7 +206,7 @@ pub(crate) async fn create_page(cx: &Cx, Form(input): Form<PageForm>) -> Result<
                     "page.create",
                     audit::target("page", page.id),
                     format!("Created status page {} (/s/{})", spec.title, spec.slug),
-                    json!({ "page": audit::value(&spec) }),
+                    json!({ "page": audit::page(&spec) }),
                 )
                 .await?;
                 return see_other(format!("/admin/pages/{}", page.id)).into_response(cx);
@@ -235,6 +241,7 @@ pub(crate) async fn edit_page(cx: &Cx) -> Result<impl View> {
     let edge = app(cx).edge.clone();
     let uploads_enabled = app(cx).media.is_some();
     let image_error = super::images::image_error(cx);
+    let components = super::components::rows(cx, &page).await?;
     Ok(view! {
         admin_shell(title: &page.spec.title, admin: &admin, section: "pages",
             <div class="page-head">
@@ -244,6 +251,14 @@ pub(crate) async fn edit_page(cx: &Cx) -> Result<impl View> {
                 <a class="btn" href=(format!("/admin/pages/new?from={id}"))>"Duplicate"</a>
                 delete_button(action: &delete_url, heading: "Delete this status page?",
                     body: "Its public URL and custom domains stop working. Monitors are kept.")
+            </div>
+            <div class="card" id="component-statuses">
+                <div class="row">
+                    <h2>"Component status"</h2>
+                    <span class="spacer"></span>
+                    <a class="small" href=(format!("{action}/components"))>"History →"</a>
+                </div>
+                super::components::component_status_list(page_id: id, rows: &components, back: &action)
             </div>
             <div class="card">page_editor(form: &form, errors: &errors, action: &action, monitor_keys: &keys)</div>
             super::images::images_section(page_id: id, logo: page.logo.clone(), favicon: page.favicon.clone(),
@@ -265,7 +280,7 @@ pub(crate) async fn update_page(cx: &Cx, Form(input): Form<PageForm>) -> Result<
             Ok(_) => {
                 state.pages.clear();
                 tracing::info!(page = id, by = %admin.login, "status page updated");
-                let details = audit::plain_changes(&before, &spec);
+                let details = audit::page_changes(&before, &spec);
                 audit::record(
                     state,
                     audit::admin(&admin),
@@ -308,7 +323,7 @@ pub(crate) async fn delete_page(cx: &Cx) -> Result<SeeOther> {
             "Deleted status page {} (/s/{})",
             page.spec.title, page.spec.slug
         ),
-        json!({ "page": audit::value(&page.spec) }),
+        json!({ "page": audit::page(&page.spec) }),
     )
     .await?;
     Ok(see_other("/admin/pages"))
@@ -332,6 +347,7 @@ fn store_errors(error: StoreError) -> Result<FormErrors> {
                     .join(", ")
             ),
         ),
+        StoreError::InvalidPage(message) => errors.insert("layout", message),
         StoreError::PageNotFound(_) => return Err(not_found().into()),
         other => return Err(other.into()),
     }

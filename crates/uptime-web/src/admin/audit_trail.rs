@@ -22,10 +22,11 @@ use crate::{
 const PAGE: u32 = 50;
 
 /// The action families offered as filters.
-const FAMILIES: [&str; 13] = [
+const FAMILIES: [&str; 14] = [
     "auth",
     "bulk",
     "channel",
+    "component",
     "config",
     "domain",
     "image",

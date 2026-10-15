@@ -431,6 +431,128 @@ pub(crate) async fn get_config(cx: &Cx) -> Result<Response> {
         .into_response(cx)
 }
 
+/// A page component and the status admins set on it.
+#[derive(Serialize)]
+struct ComponentStatusBody {
+    key: String,
+    /// `monitor` or `manual`.
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+    /// A manual component's status, or a monitor component's override;
+    /// `null` when a monitor component follows its checks.
+    status: Option<uptime_domain::ComponentStatus>,
+    /// When the status was last set, by whom, and why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    since: Option<Timestamp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    actor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+}
+
+/// The page's components with their manual statuses and overrides.
+#[route(GET "/api/v1/pages/{slug}/components")]
+pub(crate) async fn page_components(cx: &Cx) -> Result<Response> {
+    authorized!(cx, TokenScope::Read);
+    let store = &app(cx).store;
+    let Some(page) = store.page_by_slug(path_param::<Slug>(cx)).await? else {
+        return fail(cx, StatusCode::NOT_FOUND, "no such page");
+    };
+    let events = store.component_events(page.id, usize::MAX).await?;
+    let components: Vec<ComponentStatusBody> = page
+        .spec
+        .components()
+        .map(|component| {
+            let latest = events.iter().find(|e| e.key == component.key().as_str());
+            ComponentStatusBody {
+                key: component.key().to_string(),
+                kind: if component.is_manual() {
+                    "manual"
+                } else {
+                    "monitor"
+                },
+                label: component.label().map(str::to_owned),
+                status: latest.and_then(|e| e.status),
+                since: latest.map(|e| e.at),
+                actor: latest.map(|e| e.actor.clone()),
+                note: latest.and_then(|e| e.note.clone()),
+            }
+        })
+        .collect();
+    Json(serde_json::json!({ "components": components })).into_response(cx)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StatusBody {
+    /// `null` releases a monitor component's override.
+    status: Option<uptime_domain::ComponentStatus>,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+/// Sets a manual component's status, or overrides (or with `null`, releases)
+/// a monitor component's.
+#[route(PUT "/api/v1/pages/{slug}/components/{key}/status")]
+pub(crate) async fn set_component_status(cx: &Cx, Json(body): Json<Value>) -> Result<Response> {
+    let token = authorized!(cx, TokenScope::Write);
+    let body: StatusBody = match serde_json::from_value(body) {
+        Ok(body) => body,
+        Err(error) => return fail(cx, StatusCode::UNPROCESSABLE_ENTITY, error.to_string()),
+    };
+    let state = app(cx);
+    let Some(page) = state.store.page_by_slug(path_param::<Slug>(cx)).await? else {
+        return fail(cx, StatusCode::NOT_FOUND, "no such page");
+    };
+    let key = path_param::<Key>(cx);
+    let event = match state
+        .store
+        .set_component_status(
+            page.id,
+            key,
+            body.status,
+            body.note.as_deref(),
+            &audit::api(&token),
+            Timestamp::now(),
+        )
+        .await
+    {
+        Ok(event) => event,
+        Err(StoreError::ComponentNotFound(_)) => {
+            return fail(cx, StatusCode::NOT_FOUND, "no such component on this page");
+        }
+        Err(StoreError::StatusRequired(_)) => {
+            return fail(
+                cx,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "manual components always have a status",
+            );
+        }
+        Err(error) => return Err(error.into()),
+    };
+    state.page_changed(page.spec.slug.as_str());
+    crate::admin::record_component_status(state, audit::api(&token), &page, &event).await?;
+    Json(ComponentStatusBody {
+        key: event.key,
+        kind: if page.spec.component(key).is_some_and(|c| c.is_manual()) {
+            "manual"
+        } else {
+            "monitor"
+        },
+        label: page
+            .spec
+            .component(key)
+            .and_then(|c| c.label())
+            .map(str::to_owned),
+        status: event.status,
+        since: Some(event.at),
+        actor: Some(event.actor),
+        note: event.note,
+    })
+    .into_response(cx)
+}
+
 #[route(GET "/api/v1/pages/{slug}")]
 pub(crate) async fn get_page(cx: &Cx) -> Result<Response> {
     authorized!(cx, TokenScope::Read);
@@ -456,6 +578,7 @@ fn store_failure(cx: &Cx, error: StoreError) -> Result<Response> {
         StoreError::DuplicateSlug(_) => {
             fail(cx, StatusCode::CONFLICT, "a page with this slug exists")
         }
+        StoreError::InvalidPage(message) => fail(cx, StatusCode::UNPROCESSABLE_ENTITY, message),
         other => Err(other.into()),
     }
 }
@@ -512,7 +635,7 @@ pub(crate) async fn put_page(cx: &Cx, Json(mut body): Json<Value>) -> Result<Res
             state.pages.clear();
             let (action, summary, details) = match &before {
                 Some(before) => {
-                    let details = audit::plain_changes(before, &page.spec);
+                    let details = audit::page_changes(before, &page.spec);
                     let summary = format!(
                         "Updated status page {} ({})",
                         page.spec.title,
@@ -526,7 +649,7 @@ pub(crate) async fn put_page(cx: &Cx, Json(mut body): Json<Value>) -> Result<Res
                         "Created status page {} (/s/{})",
                         page.spec.title, page.spec.slug
                     ),
-                    serde_json::json!({ "page": audit::value(&page.spec) }),
+                    serde_json::json!({ "page": audit::page(&page.spec) }),
                 ),
             };
             audit::record(
@@ -562,7 +685,7 @@ pub(crate) async fn delete_page(cx: &Cx) -> Result<Response> {
             "Deleted status page {} (/s/{})",
             page.spec.title, page.spec.slug
         ),
-        serde_json::json!({ "page": audit::value(&page.spec) }),
+        serde_json::json!({ "page": audit::page(&page.spec) }),
     )
     .await?;
     StatusCode::NO_CONTENT.into_response(cx)

@@ -78,8 +78,11 @@ async fn wakes_and_domain_changes_are_applied() {
     let wake = Arc::new(Notify::new());
     let reloads = Arc::new(AtomicUsize::new(0));
     let counter = reloads.clone();
+    let pages = uptime_runtime::PageChanges::default();
+    let mut page_changes = pages.subscribe();
     let handlers = Handlers {
         events: None,
+        page_changed: Some(pages),
         wake: Some(wake.clone()),
         domains_changed: Some(Arc::new(move || {
             let counter = counter.clone();
@@ -91,9 +94,17 @@ async fn wakes_and_domain_changes_are_applied() {
 
     uptime_runtime::apply_bus_message(BusMessage::Wake, &handlers).await;
     uptime_runtime::apply_bus_message(BusMessage::DomainsChanged, &handlers).await;
+    uptime_runtime::apply_bus_message(
+        BusMessage::PageChanged {
+            slug: "platform".into(),
+        },
+        &handlers,
+    )
+    .await;
 
     tokio::time::timeout(Duration::from_secs(1), wake.notified())
         .await
         .expect("the scheduler is woken");
     assert_eq!(reloads.load(Ordering::SeqCst), 1);
+    assert_eq!(page_changes.try_recv().unwrap(), "platform");
 }

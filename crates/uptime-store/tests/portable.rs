@@ -74,16 +74,49 @@ async fn exercise(store: &Store, prefix: &str) -> (i64, MonitorId, i64) {
             look: uptime_domain::Look::Clean,
             published: true,
             website: None,
+            custom_css: Some(".status-header { border: 0 }".into()),
             sections: vec![SectionSpec {
                 name: "Core".into(),
-                components: vec![ComponentSpec {
-                    monitor: monitor_key.parse().unwrap(),
-                    label: None,
-                }],
+                components: vec![
+                    ComponentSpec::of_monitor(monitor_key.parse().unwrap(), None),
+                    ComponentSpec::manual(
+                        "cdn".parse().unwrap(),
+                        Some("CDN".into()),
+                        Some("Static assets".into()),
+                    ),
+                ],
             }],
         })
         .await
         .unwrap();
+    // Manual components keep their place, and their status history.
+    let saved = store.page(page.id).await.unwrap().unwrap();
+    assert_eq!(saved.spec.sections[0].components.len(), 2);
+    assert!(saved.spec.sections[0].components[1].is_manual());
+    assert_eq!(
+        saved.spec.custom_css.as_deref(),
+        Some(".status-header { border: 0 }")
+    );
+    store
+        .set_component_status(
+            page.id,
+            "cdn",
+            Some(uptime_domain::ComponentStatus::MajorOutage),
+            Some("Edge provider incident"),
+            "alice",
+            jiff::Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    let changes = store.component_changes(page.id).await.unwrap();
+    assert_eq!(
+        changes["cdn"].last().unwrap().status,
+        Some(uptime_domain::ComponentStatus::MajorOutage)
+    );
+    assert_eq!(
+        store.component_events(page.id, 10).await.unwrap()[0].actor,
+        "alice"
+    );
     assert_eq!(
         store
             .list_pages()
@@ -93,7 +126,8 @@ async fn exercise(store: &Store, prefix: &str) -> (i64, MonitorId, i64) {
             .find(|summary| summary.id == page.id)
             .unwrap()
             .components,
-        1
+        2,
+        "monitor and manual components"
     );
 
     let maintenance = store
@@ -213,7 +247,8 @@ async fn exercise(store: &Store, prefix: &str) -> (i64, MonitorId, i64) {
             .find(|summary| summary.id == page.id)
             .unwrap()
             .components,
-        0
+        1,
+        "the manual component stays"
     );
     assert!(store.page(page.id).await.unwrap().is_some());
     assert!(store.monitor_channels(monitor.id).await.unwrap().is_empty());
@@ -223,11 +258,14 @@ async fn exercise(store: &Store, prefix: &str) -> (i64, MonitorId, i64) {
 async fn smoke(url: &str, backend: Backend) {
     let store = connect(url, backend).await;
     assert!(store.migrate().await.unwrap().applied() > 0);
-    exercise(&store, "").await;
+    let (page_id, ..) = exercise(&store, "").await;
     drop(store);
     let reopened = connect(url, backend).await;
     assert_eq!(reopened.migrate().await.unwrap().applied(), 0);
     assert_eq!(reopened.list_monitors().await.unwrap().len(), 1);
+    // The page takes its manual components and status history with it.
+    assert!(reopened.delete_page(page_id).await.unwrap());
+    assert!(reopened.list_pages().await.unwrap().is_empty());
 }
 
 #[tokio::test]

@@ -24,6 +24,8 @@ pub struct PageForm {
     pub website_label: String,
     /// Sections and components in the plain-text layout format.
     pub layout: String,
+    /// Extra CSS for the page; blank for none.
+    pub custom_css: String,
 }
 
 impl PageForm {
@@ -77,6 +79,7 @@ impl PageForm {
                 .and_then(|w| w.label.clone())
                 .unwrap_or_default(),
             layout: format_layout(&spec.sections),
+            custom_css: spec.custom_css.clone().unwrap_or_default(),
         }
     }
 
@@ -131,11 +134,15 @@ impl PageForm {
             },
         };
 
+        let custom_css = Some(self.custom_css.trim())
+            .filter(|css| !css.is_empty())
+            .map(str::to_owned);
+
         match (slug, accent, theme, look, sections, website) {
             (Ok(slug), Ok(accent), Ok(theme), Ok(look), Ok(sections), Ok(website))
                 if errors.is_empty() =>
             {
-                Ok(PageSpec {
+                let spec = PageSpec {
                     slug,
                     title: title.to_owned(),
                     description,
@@ -144,8 +151,14 @@ impl PageForm {
                     look,
                     published: self.published.is_some(),
                     website,
+                    custom_css,
                     sections,
-                })
+                };
+                spec.validate().map_err(|error| {
+                    errors.insert(error.field, error.message);
+                    errors
+                })?;
+                Ok(spec)
             }
             _ => Err(errors),
         }
@@ -221,7 +234,7 @@ mod tests {
         assert_eq!(spec.theme, Theme::Dark);
         assert!(spec.published);
         assert_eq!(spec.sections.len(), 1);
-        assert_eq!(spec.sections[0].components[0].label.as_deref(), Some("API"));
+        assert_eq!(spec.sections[0].components[0].label(), Some("API"));
     }
 
     #[test]
@@ -284,6 +297,48 @@ mod tests {
             errors.get("layout"),
             Some("Line 1: start with a section heading like `## Services`.")
         );
+    }
+
+    #[test]
+    fn custom_css_and_manual_components_are_checked() {
+        let styled = PageForm {
+            custom_css: "  .status-header { border: 0 }  ".into(),
+            layout: "## Core\napi\nmanual:cdn | CDN | Assets\n".into(),
+            ..valid()
+        };
+        let spec = styled.to_spec().unwrap();
+        assert_eq!(
+            spec.custom_css.as_deref(),
+            Some(".status-header { border: 0 }")
+        );
+        assert!(spec.sections[0].components[1].is_manual());
+        assert_eq!(PageForm::from_spec(&spec).to_spec().unwrap(), spec);
+
+        let unsafe_css = PageForm {
+            custom_css: "a { background: url(javascript:x) }".into(),
+            ..valid()
+        };
+        assert_eq!(
+            unsafe_css
+                .to_spec()
+                .unwrap_err()
+                .fields()
+                .collect::<Vec<_>>(),
+            ["custom_css"]
+        );
+        let clash = PageForm {
+            layout: "## Core\napi\nmanual:api\n".into(),
+            ..valid()
+        };
+        assert!(
+            clash
+                .to_spec()
+                .unwrap_err()
+                .get("layout")
+                .unwrap()
+                .contains("same key as a monitor")
+        );
+        assert_eq!(valid().to_spec().unwrap().custom_css, None);
     }
 
     #[test]

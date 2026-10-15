@@ -137,17 +137,20 @@ mod tests {
                     url: "https://privatenpm.com".parse().unwrap(),
                     label: Some("Return to PrivateNPM".into()),
                 }),
+                custom_css: Some(".status-header { border-radius: 0; }".into()),
                 sections: vec![SectionSpec {
                     name: "Core".into(),
                     components: vec![
-                        ComponentSpec {
-                            monitor: "api".parse().unwrap(),
-                            label: Some("Public API".into()),
-                        },
-                        ComponentSpec {
-                            monitor: "db".parse().unwrap(),
-                            label: None,
-                        },
+                        ComponentSpec::of_monitor(
+                            "api".parse().unwrap(),
+                            Some("Public API".into()),
+                        ),
+                        ComponentSpec::of_monitor("db".parse().unwrap(), None),
+                        ComponentSpec::manual(
+                            "cdn".parse().unwrap(),
+                            Some("CDN".into()),
+                            Some("Static assets".into()),
+                        ),
                     ],
                 }],
             }],

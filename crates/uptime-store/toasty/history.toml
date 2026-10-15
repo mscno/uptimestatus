@@ -144,3 +144,8 @@ snapshot_name = "0027_snapshot.toml"
 id = 9144733347804171094
 name = "0028_audit_events.sql"
 snapshot_name = "0028_snapshot.toml"
+
+[[migrations]]
+id = 2272619929532738911
+name = "0029_page_components_and_css.sql"
+snapshot_name = "0029_snapshot.toml"

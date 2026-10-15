@@ -47,12 +47,13 @@ async fn setup(published: bool) -> TestApp {
             look: Default::default(),
             published,
             website: None,
+            custom_css: None,
             sections: vec![SectionSpec {
                 name: "Core".into(),
-                components: vec![ComponentSpec {
-                    monitor: "api".parse().unwrap(),
-                    label: Some("Public API".into()),
-                }],
+                components: vec![ComponentSpec::of_monitor(
+                    "api".parse().unwrap(),
+                    Some("Public API".into()),
+                )],
             }],
         })
         .await

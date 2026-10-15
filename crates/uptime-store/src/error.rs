@@ -24,6 +24,17 @@ pub enum StoreError {
     #[error("status page {0} not found")]
     PageNotFound(i64),
 
+    /// The page breaks a rule of [`uptime_domain::PageSpec::validate`].
+    #[error("invalid status page: {0}")]
+    InvalidPage(String),
+
+    #[error("status page has no component `{0}`")]
+    ComponentNotFound(String),
+
+    /// Manual components always have a status; only overrides can be cleared.
+    #[error("manual component `{0}` needs a status")]
+    StatusRequired(String),
+
     #[error("`{0}` is already used by a status page")]
     DuplicateDomain(Hostname),
 

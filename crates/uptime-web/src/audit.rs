@@ -93,6 +93,32 @@ pub(crate) fn plain_changes<T: Serialize>(before: &T, after: &T) -> Value {
     changes(before, after, before, after)
 }
 
+/// A page for details: as data, with custom CSS shortened to its length.
+pub(crate) fn page(spec: &uptime_domain::PageSpec) -> Value {
+    let mut page = value(spec);
+    if let Some(css) = &spec.custom_css {
+        page["custom_css"] = json!({ "length": css.len() });
+    }
+    page
+}
+
+/// [`plain_changes`] between two pages, with custom CSS changes listed by
+/// length rather than in full.
+pub(crate) fn page_changes(
+    before: &uptime_domain::PageSpec,
+    after: &uptime_domain::PageSpec,
+) -> Value {
+    let mut details = plain_changes(before, after);
+    if before.custom_css != after.custom_css {
+        let length = |css: &Option<String>| css.as_ref().map_or(0, String::len);
+        details["changed"]["custom_css"] = json!({
+            "from": { "length": length(&before.custom_css) },
+            "to": { "length": length(&after.custom_css) },
+        });
+    }
+    details
+}
+
 /// Whether [`changes`] found anything.
 pub(crate) fn changed_fields(details: &Value) -> Vec<String> {
     details["changed"]

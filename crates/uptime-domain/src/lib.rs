@@ -8,6 +8,7 @@ pub mod api_token;
 pub mod auth;
 pub mod cert;
 pub mod check;
+pub mod component;
 pub mod config;
 pub mod domain;
 pub mod group;
@@ -35,6 +36,7 @@ pub use check::{
     CheckSpec, DnsCheck, DnsRecordType, HttpAuth, HttpCheck, HttpMethod, KeywordRule, PushCheck,
     TcpCheck,
 };
+pub use component::{ComponentStatus, StatusChange, UnknownComponentStatus};
 pub use config::ConfigFile;
 pub use domain::{DnsAnswers, Edge, Hostname, HostnameError, points_at_edge};
 pub use group::{GroupCheck, GroupError, GroupMode, GroupOutcome, Member, normalize_group, rollup};
@@ -50,8 +52,9 @@ pub use notify::{
 };
 pub use observation::{FailureKind, Observation, UnknownFailureKind};
 pub use page::{
-    Accent, BarLevel, ComponentSpec, LayoutError, Look, PageSlug, PageSpec, PageStatus,
-    SectionSpec, Theme, Website, bar_level, format_layout, page_status, parse_layout,
+    Accent, BarLevel, ComponentKey, ComponentSpec, LayoutError, Look, MAX_CUSTOM_CSS, PageError,
+    PageSlug, PageSpec, PageStatus, SectionSpec, Theme, Website, bar_level, format_layout,
+    page_status, parse_layout, validate_custom_css,
 };
 pub use policy::{CheckPolicy, PolicyError};
 pub use protocol::{CheckError, DatabaseCheck, DatabaseEngine, GrpcCheck, MqttCheck, PingCheck};

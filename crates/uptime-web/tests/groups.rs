@@ -272,12 +272,10 @@ fn page(slug: &str, key: &str) -> PageSpec {
         look: Default::default(),
         published: true,
         website: None,
+        custom_css: None,
         sections: vec![SectionSpec {
             name: "Core".into(),
-            components: vec![ComponentSpec {
-                monitor: key.parse().unwrap(),
-                label: None,
-            }],
+            components: vec![ComponentSpec::of_monitor(key.parse().unwrap(), None)],
         }],
     }
 }

@@ -89,6 +89,7 @@ async fn verified_domains_are_loaded_for_routing_and_tls() {
             look: Default::default(),
             published: true,
             website: None,
+            custom_css: None,
             sections: vec![],
         })
         .await

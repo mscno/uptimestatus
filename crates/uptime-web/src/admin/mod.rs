@@ -3,6 +3,7 @@
 mod alerts;
 mod audit_trail;
 mod bulk;
+mod components;
 mod domains;
 pub mod form;
 mod images;
@@ -96,6 +97,9 @@ pub(crate) use alerts::{
 };
 pub(crate) use audit_trail::audit_page;
 pub(crate) use bulk::bulk_action;
+pub(crate) use components::{
+    page_components, record as record_component_status, set_component_status,
+};
 pub(crate) use domains::{add_domain, remove_domain, verify_domain};
 pub(crate) use images::{remove_image, upload_image};
 pub(crate) use incidents::{

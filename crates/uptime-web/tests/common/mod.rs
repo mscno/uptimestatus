@@ -170,6 +170,12 @@ impl Client {
         self.send(Request::get(uri), Body::empty()).await
     }
 
+    /// A GET with one extra request header (e.g. `if-none-match`).
+    pub async fn get_with_header(&mut self, uri: &str, name: &str, value: &str) -> Reply {
+        self.send(Request::get(uri).header(name, value), Body::empty())
+            .await
+    }
+
     /// A GET for another hostname (e.g. a custom domain).
     pub async fn get_on(&mut self, host: &str, uri: &str) -> Reply {
         let request = Request::get(uri)

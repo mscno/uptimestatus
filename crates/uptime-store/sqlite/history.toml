@@ -59,3 +59,8 @@ snapshot_name = "0010_snapshot.toml"
 id = 6328750952531761578
 name = "0011_audit_events.sql"
 snapshot_name = "0011_snapshot.toml"
+
+[[migrations]]
+id = 179139631684377965
+name = "0012_page_components_and_css.sql"
+snapshot_name = "0012_snapshot.toml"

@@ -1,16 +1,18 @@
 //! Status pages: definition (sections of monitor components) and the data they show.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
-use jiff::civil::Date;
+use jiff::{Timestamp, civil::Date};
 use uptime_domain::{
-    ComponentSpec, MonitorId, MonitorKey, PageSlug, PageSpec, SectionSpec, Tally, Website,
+    ComponentSpec, ComponentStatus, MonitorId, MonitorKey, PageSlug, PageSpec, SectionSpec, Tally,
+    Website,
 };
 
 use crate::{
     Result, Store, StoreError, convert,
     models::{
-        MonitorDailyRecord, MonitorRecord, PageComponentRecord, PageSectionRecord, StatusPageRecord,
+        ComponentStatusEventRecord, MonitorDailyRecord, MonitorRecord, PageComponentRecord,
+        PageManualComponentRecord, PageSectionRecord, StatusPageRecord,
     },
 };
 
@@ -45,6 +47,7 @@ impl Store {
     /// Creates a page. Every referenced monitor must exist.
     #[tracing::instrument(skip_all, fields(slug = %spec.slug))]
     pub async fn create_page(&self, spec: &PageSpec) -> Result<Page> {
+        validate(spec)?;
         let mut db = self.db();
         let mut tx = self.transaction(&mut db).await?;
         if StatusPageRecord::filter_by_slug(spec.slug.as_str())
@@ -66,10 +69,12 @@ impl Store {
             published: spec.published,
             website_url: spec.website.as_ref().map(|w| w.url.to_string()),
             website_label: spec.website.as_ref().and_then(|w| w.label.clone()),
+            custom_css: spec.custom_css.clone(),
         })
         .exec(&mut tx)
         .await?;
         insert_layout(&mut tx, record.id, spec, &monitor_ids).await?;
+        start_manual_history(&mut tx, record.id, spec, Timestamp::now()).await?;
         tx.commit().await?;
         Ok(Page {
             id: record.id,
@@ -82,6 +87,7 @@ impl Store {
     /// Replaces a page's definition, including its whole layout.
     #[tracing::instrument(skip_all, fields(page = id, slug = %spec.slug))]
     pub async fn update_page(&self, id: i64, spec: &PageSpec) -> Result<Page> {
+        validate(spec)?;
         let mut db = self.db();
         let mut tx = self.transaction(&mut db).await?;
         let existing = StatusPageRecord::filter_by_id(id)
@@ -109,14 +115,17 @@ impl Store {
             .published(spec.published)
             .website_url(spec.website.as_ref().map(|w| w.url.to_string()))
             .website_label(spec.website.as_ref().and_then(|w| w.label.clone()))
+            .custom_css(spec.custom_css.clone())
             .exec(&mut tx)
             .await?;
-        // Components go with their sections (ON DELETE CASCADE).
+        // Components go with their sections (ON DELETE CASCADE); their status
+        // history is keyed by page and component key, so it stays.
         toasty::sql::statement(r#"DELETE FROM "page_sections" WHERE "page_id" = $1"#)
             .bind(id)
             .exec(&mut tx)
             .await?;
         insert_layout(&mut tx, id, spec, &monitor_ids).await?;
+        start_manual_history(&mut tx, id, spec, Timestamp::now()).await?;
         tx.commit().await?;
         Ok(Page {
             id,
@@ -201,8 +210,11 @@ impl Store {
             .exec(&mut db)
             .await?;
         let counts = toasty::sql::query(
-            r#"SELECT s."page_id", COUNT(c."id") FROM "page_sections" s
-               JOIN "page_components" c ON c."section_id" = s."id" GROUP BY s."page_id""#,
+            r#"SELECT s."page_id", COUNT(*) FROM "page_sections" s
+               JOIN (SELECT "section_id" FROM "page_components"
+                     UNION ALL SELECT "section_id" FROM "page_manual_components") c
+                 ON c."section_id" = s."id"
+               GROUP BY s."page_id""#,
         )
         .exec(&mut db)
         .await?
@@ -274,11 +286,32 @@ impl Store {
         let mut components = PageComponentRecord::filter(
             PageComponentRecord::fields()
                 .section_id()
-                .in_list(section_ids),
+                .in_list(section_ids.clone()),
         )
         .exec(&mut db)
         .await?;
         components.sort_by_key(|component| component.position);
+        let manual = PageManualComponentRecord::filter(
+            PageManualComponentRecord::fields()
+                .section_id()
+                .in_list(section_ids),
+        )
+        .exec(&mut db)
+        .await?;
+        let manual: Vec<(i64, i32, ComponentSpec)> = manual
+            .into_iter()
+            .map(|c| {
+                Ok((
+                    c.section_id,
+                    c.position,
+                    ComponentSpec::manual(
+                        convert::parse("page_manual_components.key", &c.key)?,
+                        c.label,
+                        c.description,
+                    ),
+                ))
+            })
+            .collect::<Result<_>>()?;
         let monitor_ids: Vec<i64> = components.iter().map(|c| c.monitor_id).collect();
         let keys: HashMap<i64, MonitorKey> =
             MonitorRecord::filter(MonitorRecord::fields().id().in_list(monitor_ids))
@@ -290,18 +323,30 @@ impl Store {
 
         let sections = sections
             .into_iter()
-            .map(|section| SectionSpec {
-                name: section.name,
-                components: components
+            .map(|section| {
+                let mut placed: Vec<(i32, ComponentSpec)> = components
                     .iter()
                     .filter(|c| c.section_id == section.id)
                     .filter_map(|c| {
-                        keys.get(&c.monitor_id).map(|key| ComponentSpec {
-                            monitor: key.clone(),
-                            label: c.label.clone(),
+                        keys.get(&c.monitor_id).map(|key| {
+                            (
+                                c.position,
+                                ComponentSpec::of_monitor(key.clone(), c.label.clone()),
+                            )
                         })
                     })
-                    .collect(),
+                    .chain(
+                        manual
+                            .iter()
+                            .filter(|(section_id, ..)| *section_id == section.id)
+                            .map(|(_, position, spec)| (*position, spec.clone())),
+                    )
+                    .collect();
+                placed.sort_by_key(|(position, _)| *position);
+                SectionSpec {
+                    name: section.name,
+                    components: placed.into_iter().map(|(_, spec)| spec).collect(),
+                }
             })
             .collect();
         Ok(Page {
@@ -333,6 +378,7 @@ impl Store {
                         })
                     })
                     .transpose()?,
+                custom_css: record.custom_css,
                 sections,
             },
             logo: record.logo,
@@ -396,17 +442,76 @@ async fn insert_layout(
         .exec(tx)
         .await?;
         for (position, component) in section.components.iter().enumerate() {
-            toasty::create!(PageComponentRecord {
-                section_id: record.id,
-                monitor_id: monitor_ids[&component.monitor],
-                label: component.label.clone(),
-                position: i32::try_from(position).unwrap_or(i32::MAX),
-            })
-            .exec(tx)
-            .await?;
+            let position = i32::try_from(position).unwrap_or(i32::MAX);
+            match component {
+                ComponentSpec::Monitor { monitor, label } => {
+                    toasty::create!(PageComponentRecord {
+                        section_id: record.id,
+                        monitor_id: monitor_ids[monitor],
+                        label: label.clone(),
+                        position: position,
+                    })
+                    .exec(tx)
+                    .await?;
+                }
+                ComponentSpec::Manual {
+                    key,
+                    label,
+                    description,
+                } => {
+                    toasty::create!(PageManualComponentRecord {
+                        section_id: record.id,
+                        key: key.as_str(),
+                        label: label.clone(),
+                        description: description.clone(),
+                        position: position,
+                    })
+                    .exec(tx)
+                    .await?;
+                }
+            }
         }
     }
     Ok(())
+}
+
+/// Starts the history of manual components that have none: operational
+/// from now. Overrides of monitor components start only when set.
+async fn start_manual_history(
+    tx: &mut toasty::Transaction<'_>,
+    page_id: i64,
+    spec: &PageSpec,
+    now: Timestamp,
+) -> Result<()> {
+    let known: HashSet<String> = ComponentStatusEventRecord::filter_by_page_id(page_id)
+        .exec(&mut *tx)
+        .await?
+        .into_iter()
+        .map(|event| event.component_key)
+        .collect();
+    for component in spec.components().filter(|c| c.is_manual()) {
+        if known.contains(component.key().as_str()) {
+            continue;
+        }
+        toasty::create!(ComponentStatusEventRecord {
+            page_id: page_id,
+            component_key: component.key().as_str(),
+            at: now,
+            status: Some(ComponentStatus::Operational.as_str().to_owned()),
+            previous: None::<String>,
+            note: None::<String>,
+            actor: "system",
+        })
+        .exec(&mut *tx)
+        .await?;
+    }
+    Ok(())
+}
+
+/// A page's own rules ([`PageSpec::validate`]), as a store error.
+fn validate(spec: &PageSpec) -> Result<()> {
+    spec.validate()
+        .map_err(|error| StoreError::InvalidPage(error.message))
 }
 
 /// `NULL` for the default look, so existing pages need no backfill.

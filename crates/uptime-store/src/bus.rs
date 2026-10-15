@@ -38,6 +38,9 @@ pub enum BusMessage {
     Wake,
     /// Verified custom domains changed: reload them.
     DomainsChanged,
+    /// A status page changed without a check (a manual component status):
+    /// refresh it where it is open.
+    PageChanged { slug: String },
 }
 
 #[derive(Serialize, Deserialize)]

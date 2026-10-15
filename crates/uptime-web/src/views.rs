@@ -62,6 +62,9 @@ pub(crate) async fn document(
     /// An Atom feed to advertise to feed readers.
     #[default]
     feed: &str,
+    /// A status page's custom stylesheet, loaded after ours.
+    #[default]
+    stylesheet: &str,
     #[default] child: Child<'_>,
 ) -> Result<impl View> {
     let theme = starbase_theme(cx, theme);
@@ -88,6 +91,9 @@ pub(crate) async fn document(
                 }
                 <link rel="preload" as="font" type="font/woff2" crossorigin="" href="/static/starbase/fonts/jetbrains-mono.woff2">
                 <link rel="stylesheet" href=(CSS_HREF.as_str())>
+                if !stylesheet.is_empty() {
+                    <link rel="stylesheet" href=(stylesheet)>
+                }
                 <script type="importmap">(Unescaped::new_unchecked(IMPORT_MAP.as_str()))</script>
                 <script type="module" src=(DATASTAR_SRC.as_str())></script>
                 for module in &modules {

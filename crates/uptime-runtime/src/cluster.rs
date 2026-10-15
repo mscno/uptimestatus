@@ -11,7 +11,7 @@ use uptime_store::{
     bus::{BusMessage, Listener},
 };
 
-use crate::{CheckCompleted, EventBus, events::Forwarder};
+use crate::{CheckCompleted, EventBus, PageChanges, events::Forwarder};
 
 /// A callback run when another instance changed the verified domains.
 pub type Reload = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
@@ -40,6 +40,8 @@ pub struct Handlers {
     pub wake: Option<Arc<Notify>>,
     /// Reloads this instance's verified domains.
     pub domains_changed: Option<Reload>,
+    /// Refreshes this instance's open status pages.
+    pub page_changed: Option<PageChanges>,
 }
 
 impl Cluster {
@@ -117,6 +119,11 @@ pub async fn apply(message: BusMessage, handlers: &Handlers) {
         BusMessage::DomainsChanged => {
             if let Some(reload) = &handlers.domains_changed {
                 reload().await;
+            }
+        }
+        BusMessage::PageChanged { slug } => {
+            if let Some(pages) = &handlers.page_changed {
+                pages.notify(&slug);
             }
         }
     }

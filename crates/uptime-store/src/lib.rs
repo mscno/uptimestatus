@@ -6,6 +6,7 @@
 mod audit;
 mod auth;
 pub mod bus;
+mod components;
 mod config;
 mod convert;
 mod domains;
@@ -29,6 +30,7 @@ use toasty_core::driver::operation::TransactionMode;
 
 pub use audit::{AuditEvent, AuditQuery, AuditTarget, NewAuditEvent};
 pub use auth::{AdminUser, GithubIdentity, NewSession, SessionInfo};
+pub use components::ComponentStatusEvent;
 pub use domains::{CustomDomain, DomainStatus};
 pub use error::StoreError;
 pub use incidents::{Incident, IncidentUpdate, NewIncident};

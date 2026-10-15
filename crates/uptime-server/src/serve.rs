@@ -378,10 +378,12 @@ pub async fn run(
             }
         }));
     }
+    let page_changes = uptime_runtime::PageChanges::default();
     let handlers = Handlers {
         events: roles.web.then(|| events.clone()),
         wake: waker.clone(),
         domains_changed: Some(reload),
+        page_changed: roles.web.then(|| page_changes.clone()),
     };
     if store.backend() == Backend::Postgres {
         background.push(tokio::spawn(cluster.clone().listen(
@@ -396,7 +398,9 @@ pub async fn run(
         domains,
         verifier,
     };
-    let state = app_state(config, store, events, prober, services)?.with_cluster(cluster);
+    let state = app_state(config, store, events, prober, services)?
+        .with_cluster(cluster)
+        .with_page_changes(page_changes);
     let served = match public {
         Some(public) => serve(state, public, internal, shutdown.clone()).await,
         None => serve_internal(state, internal, shutdown.clone()).await,

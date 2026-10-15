@@ -6,7 +6,7 @@ use tokio::sync::Notify;
 use uptime_domain::Edge;
 use uptime_notify::Sender;
 use uptime_probe::Prober;
-use uptime_runtime::{Cluster, EventBus, VerifyDomain};
+use uptime_runtime::{Cluster, EventBus, PageChanges, VerifyDomain};
 use uptime_store::bus::BusMessage;
 use uptime_store::{Backend, Store};
 
@@ -37,6 +37,8 @@ pub struct AppState {
     pub cluster: Option<Cluster>,
     /// Uploaded images. `None` when no storage directory is configured.
     pub media: Option<MediaStore>,
+    /// Status pages changed without a check (open pages refresh at once).
+    pub page_changes: PageChanges,
 }
 
 impl AppState {
@@ -60,6 +62,28 @@ impl AppState {
             prober: None,
             scheduler: None,
             pages: PageCache::default(),
+            page_changes: PageChanges::default(),
+        }
+    }
+
+    /// Shares the page-change channel the cluster listener feeds.
+    #[must_use]
+    pub fn with_page_changes(self, page_changes: PageChanges) -> Self {
+        Self {
+            page_changes,
+            ..self
+        }
+    }
+
+    /// A status page changed outside a check: rebuild it here, refresh open
+    /// copies, and tell the other instances.
+    pub(crate) fn page_changed(&self, slug: &str) {
+        self.pages.clear();
+        self.page_changes.notify(slug);
+        if let Some(cluster) = &self.cluster {
+            cluster.publish(BusMessage::PageChanged {
+                slug: slug.to_owned(),
+            });
         }
     }
 

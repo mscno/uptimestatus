@@ -105,6 +105,7 @@ async fn setup() -> Setup {
             look: Default::default(),
             published: true,
             website: None,
+            custom_css: None,
             sections: vec![],
         })
         .await
@@ -292,6 +293,7 @@ async fn domains_are_managed_only_through_their_own_page() {
             look: Default::default(),
             published: true,
             website: None,
+            custom_css: None,
             sections: vec![],
         })
         .await

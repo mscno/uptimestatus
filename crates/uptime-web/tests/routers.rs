@@ -65,6 +65,7 @@ async fn platform_page(db: &TestDb) {
         look: Default::default(),
         published: true,
         website: None,
+        custom_css: None,
         sections: vec![],
     };
     db.store().create_page(&spec).await.unwrap();

@@ -191,6 +191,8 @@ pub struct StatusPageRecord {
     /// Uploaded images: file names in the media directory.
     pub logo: Option<String>,
     pub favicon: Option<String>,
+    /// Extra CSS served as `/s/{slug}/custom.css`.
+    pub custom_css: Option<String>,
     #[auto]
     pub created_at: Timestamp,
     #[auto]
@@ -223,6 +225,42 @@ pub struct PageComponentRecord {
     pub monitor_id: i64,
     pub label: Option<String>,
     pub position: i32,
+}
+
+/// A component without a monitor, whose status admins set. Shares the
+/// section's positions with [`PageComponentRecord`].
+#[derive(Debug, toasty::Model)]
+#[table = "page_manual_components"]
+pub struct PageManualComponentRecord {
+    #[key]
+    #[auto]
+    pub id: i64,
+    #[index]
+    pub section_id: i64,
+    /// Unique on the page, distinct from its monitor keys.
+    pub key: String,
+    pub label: Option<String>,
+    pub description: Option<String>,
+    pub position: i32,
+}
+
+/// A change of a component's manual status (or of a monitor component's
+/// override; `status` `NULL` clears it). Kept for the life of the page: it is
+/// the uptime history of manual components.
+#[derive(Debug, toasty::Model)]
+#[table = "component_status_events"]
+pub struct ComponentStatusEventRecord {
+    #[key]
+    #[auto]
+    pub id: i64,
+    #[index]
+    pub page_id: i64,
+    pub component_key: String,
+    pub at: Timestamp,
+    pub status: Option<String>,
+    pub previous: Option<String>,
+    pub note: Option<String>,
+    pub actor: String,
 }
 
 /// A custom hostname serving a status page.

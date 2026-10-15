@@ -14,10 +14,7 @@ use uptime_store::{CheckRecord, StoreError};
 use uptime_testkit::TestDb;
 
 fn component(key: &str, label: Option<&str>) -> ComponentSpec {
-    ComponentSpec {
-        monitor: key.parse().unwrap(),
-        label: label.map(str::to_owned),
-    }
+    ComponentSpec::of_monitor(key.parse().unwrap(), label.map(str::to_owned))
 }
 
 fn page(slug: &str) -> PageSpec {
@@ -30,6 +27,7 @@ fn page(slug: &str) -> PageSpec {
         look: uptime_domain::Look::Clean,
         published: true,
         website: None,
+        custom_css: None,
         sections: vec![
             SectionSpec {
                 name: "Core".into(),

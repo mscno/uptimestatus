@@ -123,6 +123,7 @@ async fn setup(prewarm_tls: bool) -> Setup {
             look: Default::default(),
             published: true,
             website: None,
+            custom_css: None,
             sections: vec![],
         })
         .await

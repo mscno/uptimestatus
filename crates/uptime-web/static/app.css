@@ -383,6 +383,52 @@
 		cursor: progress;
 	}
 
+	.btn-small {
+		min-height: 0;
+		padding: var(--sb-space-1) var(--sb-space-3);
+		font-size: var(--sb-font-size-1);
+	}
+
+	.btn[aria-pressed="true"] {
+		border-color: var(--sb-brand);
+		color: var(--sb-brand);
+	}
+
+	/* ── Component statuses (manual components and overrides) ──────── */
+
+	.component-statuses {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+	}
+
+	.component-statuses li + li {
+		border-top: 1px solid var(--sb-border-subtle);
+	}
+
+	.component-statuses li {
+		padding: var(--sb-space-3) 0;
+	}
+
+	.component-statuses form {
+		margin: 0;
+	}
+
+	.component-statuses p {
+		margin: var(--sb-space-1) 0 0;
+	}
+
+	.status-buttons {
+		flex-wrap: wrap;
+		gap: var(--sb-space-2);
+		margin-top: var(--sb-space-2);
+	}
+
+	.status-buttons input[type="text"] {
+		flex: 1 1 12rem;
+		min-width: 0;
+	}
+
 	/* The 8-bit plate with an offset drop (Starbase's "pixel" button). */
 	.btn-pixel {
 		--_s: var(--sb-frame-step);
@@ -676,6 +722,13 @@
 		min-height: 5rem;
 		font-size: var(--sb-font-size-1);
 		line-height: 1.6;
+	}
+
+	/* Code in a textarea (custom CSS). */
+	textarea[name="custom_css"] {
+		font-family: var(--sb-font-mono, var(--sb-font-ui));
+		white-space: pre;
+		tab-size: 2;
 	}
 
 	[aria-invalid="true"] {

@@ -3,11 +3,16 @@
 use std::{net::IpAddr, sync::Arc, time::Duration};
 
 use reqwest::{StatusCode, header};
+use sha2::{Digest as _, Sha256};
 use uptime_domain::{Alert, AlertEvent, ChannelKind, ChannelSpec};
 use uptime_probe::{Prober, SetupError};
 use url::Url;
 
-use crate::render::{discord_payload, signature, slack_payload, webhook_payload};
+use crate::{
+    Email, Mailer,
+    letters::alert_letter,
+    render::{discord_payload, signature, slack_payload, webhook_payload},
+};
 
 /// How long one delivery attempt may take.
 const TIMEOUT: Duration = Duration::from_secs(15);
@@ -25,7 +30,7 @@ pub struct DeliveryError {
 }
 
 impl DeliveryError {
-    fn transient(message: impl Into<String>) -> Self {
+    pub(crate) fn transient(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             permanent: false,
@@ -33,11 +38,18 @@ impl DeliveryError {
         }
     }
 
-    fn permanent(message: impl Into<String>) -> Self {
+    pub(crate) fn permanent(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             permanent: true,
             retry_after: None,
+        }
+    }
+
+    pub(crate) fn retry_after(message: impl Into<String>, wait: Option<Duration>) -> Self {
+        Self {
+            retry_after: wait,
+            ..Self::transient(message)
         }
     }
 }
@@ -50,6 +62,8 @@ pub struct Sender {
     client: reqwest::Client,
     permits: AddressGuard,
     app_url: Option<Url>,
+    /// Sends email channels; `None` when email is not configured.
+    mailer: Option<Mailer>,
 }
 
 impl std::fmt::Debug for Sender {
@@ -67,6 +81,7 @@ impl Sender {
             client,
             permits: Arc::new(|_| true),
             app_url: None,
+            mailer: None,
         }
     }
 
@@ -77,6 +92,7 @@ impl Sender {
             client: prober.outbound_client(user_agent, TIMEOUT)?,
             permits: Arc::new(move |ip| guard.permits(ip)),
             app_url: None,
+            mailer: None,
         })
     }
 
@@ -87,6 +103,20 @@ impl Sender {
             app_url: Some(app_url),
             ..self
         }
+    }
+
+    /// Sends email channels through `mailer`.
+    #[must_use]
+    pub fn with_mailer(self, mailer: Mailer) -> Self {
+        Self {
+            mailer: Some(mailer),
+            ..self
+        }
+    }
+
+    /// The mailer, when email is configured.
+    pub fn mailer(&self) -> Option<&Mailer> {
+        self.mailer.as_ref()
     }
 
     /// Where an alert links to: the monitor's admin page (the console for tests).
@@ -101,8 +131,88 @@ impl Sender {
 
     /// Delivers `alert` to `channel`.
     pub async fn send(&self, channel: &ChannelSpec, alert: &Alert) -> Result<(), DeliveryError> {
-        if let Some(url::Host::Ipv4(_) | url::Host::Ipv6(_)) = channel.url.host() {
-            let ip = match channel.url.host() {
+        let link = self.link(alert);
+        if channel.kind == ChannelKind::Email {
+            return self.send_email(channel, alert, link.as_ref()).await;
+        }
+        let payload = match channel.kind {
+            ChannelKind::Slack => slack_payload(alert, link.as_ref()),
+            ChannelKind::Discord => discord_payload(alert, link.as_ref()),
+            ChannelKind::Webhook | ChannelKind::Email => webhook_payload(alert, link.as_ref()),
+        };
+        let body = serde_json::to_vec(&payload)
+            .map_err(|e| DeliveryError::permanent(format!("encoding the payload: {e}")))?;
+        let signed = (channel.kind == ChannelKind::Webhook).then(|| Signed {
+            event: alert.event.as_str(),
+            secret: channel.secret.as_deref().filter(|s| !s.is_empty()),
+        });
+        self.post(&channel.url, channel.kind.label(), signed, body)
+            .await
+    }
+
+    async fn send_email(
+        &self,
+        channel: &ChannelSpec,
+        alert: &Alert,
+        link: Option<&Url>,
+    ) -> Result<(), DeliveryError> {
+        let mailer = self
+            .mailer
+            .as_ref()
+            .ok_or_else(|| DeliveryError::permanent("email is not configured"))?;
+        let to = channel.email_recipients();
+        if to.is_empty() {
+            return Err(DeliveryError::permanent("the channel has no recipients"));
+        }
+        let letter = alert_letter(alert, link);
+        // Retries of one alert reuse the key; other alerts and channels differ.
+        let channel_hash = hex::encode(&Sha256::digest(channel.url.as_str().as_bytes())[..8]);
+        mailer
+            .send(&Email {
+                from: mailer.default_from().clone(),
+                to,
+                reply_to: None,
+                subject: letter.subject,
+                html: letter.html,
+                text: letter.text,
+                headers: Vec::new(),
+                idempotency_key: format!(
+                    "alert-{}-{}-{}-{channel_hash}",
+                    alert.monitor.id,
+                    alert.event.as_str(),
+                    alert.at.as_nanosecond()
+                ),
+                tag: "alert".into(),
+            })
+            .await
+    }
+
+    /// POSTs a signed JSON `body` to a status page's webhook subscriber
+    /// (`X-Uptimestatus-Event`, `-Timestamp` and `-Signature` headers).
+    pub async fn post_signed(
+        &self,
+        url: &Url,
+        event: &str,
+        secret: &str,
+        body: Vec<u8>,
+    ) -> Result<(), DeliveryError> {
+        let signed = Signed {
+            event,
+            secret: Some(secret),
+        };
+        self.post(url, "Webhook", Some(signed), body).await
+    }
+
+    /// POSTs JSON under the address policy, classifying failures.
+    async fn post(
+        &self,
+        url: &Url,
+        label: &str,
+        signed: Option<Signed<'_>>,
+        body: Vec<u8>,
+    ) -> Result<(), DeliveryError> {
+        if let Some(url::Host::Ipv4(_) | url::Host::Ipv6(_)) = url.host() {
+            let ip = match url.host() {
                 Some(url::Host::Ipv4(v4)) => IpAddr::V4(v4),
                 Some(url::Host::Ipv6(v6)) => IpAddr::V6(v6),
                 _ => unreachable!("matched above"),
@@ -113,25 +223,17 @@ impl Sender {
                 )));
             }
         }
-        let link = self.link(alert);
-        let payload = match channel.kind {
-            ChannelKind::Slack => slack_payload(alert, link.as_ref()),
-            ChannelKind::Discord => discord_payload(alert, link.as_ref()),
-            ChannelKind::Webhook => webhook_payload(alert, link.as_ref()),
-        };
-        let body = serde_json::to_vec(&payload)
-            .map_err(|e| DeliveryError::permanent(format!("encoding the payload: {e}")))?;
         let mut request = self
             .client
-            .post(channel.url.clone())
+            .post(url.clone())
             .timeout(TIMEOUT)
             .header(header::CONTENT_TYPE, "application/json");
-        if channel.kind == ChannelKind::Webhook {
+        if let Some(signed) = signed {
             let timestamp = jiff::Timestamp::now().as_second();
             request = request
-                .header("X-Uptimestatus-Event", alert.event.as_str())
+                .header("X-Uptimestatus-Event", signed.event)
                 .header("X-Uptimestatus-Timestamp", timestamp.to_string());
-            if let Some(secret) = channel.secret.as_deref().filter(|s| !s.is_empty()) {
+            if let Some(secret) = signed.secret {
                 request = request.header(
                     "X-Uptimestatus-Signature",
                     signature(secret, timestamp, &body),
@@ -162,7 +264,7 @@ impl Sender {
             .get(header::RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.trim().parse::<f64>().ok());
-        let message = format!("{} answered {status}", channel.kind.label());
+        let message = format!("{label} answered {status}");
         match status {
             StatusCode::TOO_MANY_REQUESTS => {
                 // Discord puts the wait (seconds, fractional) in the JSON body.
@@ -185,6 +287,12 @@ impl Sender {
             _ => Err(DeliveryError::transient(message)),
         }
     }
+}
+
+/// Signing a webhook POST.
+struct Signed<'a> {
+    event: &'a str,
+    secret: Option<&'a str>,
 }
 
 async fn limited_body(mut response: reqwest::Response, limit: usize) -> reqwest::Result<String> {

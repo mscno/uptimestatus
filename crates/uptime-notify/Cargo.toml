@@ -11,6 +11,7 @@ repository.workspace = true
 [dependencies]
 hex.workspace = true
 hmac.workspace = true
+lettermint.workspace = true
 jiff.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 serde_json.workspace = true

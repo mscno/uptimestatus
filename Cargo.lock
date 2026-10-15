@@ -2543,6 +2543,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
 
 [[package]]
+name = "lettermint"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ed915bcac9a58a5fbae38f7c1c5875b9f77d64d4667d7cce1bacd5c9e624d0f"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "form_urlencoded",
+ "futures-core",
+ "hex",
+ "hmac 0.13.0",
+ "http",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "lettre"
 version = "0.11.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6075,6 +6096,7 @@ dependencies = [
  "hex",
  "hmac 0.13.0",
  "jiff",
+ "lettermint",
  "pretty_assertions",
  "reqwest",
  "serde_json",

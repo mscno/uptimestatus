@@ -707,3 +707,117 @@ async fn group_scheduling_helpers_work_on_sqlite_and_turso() {
         std::fs::remove_file(path).unwrap();
     }
 }
+
+#[tokio::test]
+async fn subscribers_work_on_sqlite_and_turso() {
+    use uptime_domain::{Impact, IncidentStatus, Selection, SubscriberStatus};
+    use uptime_store::{LinkPurpose, Message, NewIncident, NewSubscription, Subscribed};
+    for (scheme, backend) in [("sqlite", Backend::Sqlite), ("turso", Backend::Turso)] {
+        let path = temporary_path(scheme);
+        let store = connect(&format!("{scheme}:{}", path.display()), backend)
+            .await
+            .with_keyring(
+                uptime_store::secrets::Keyring::parse(&uptime_store::secrets::Keyring::generate())
+                    .unwrap(),
+            )
+            .with_subscriptions(true);
+        store.migrate().await.unwrap();
+        store.create_monitor(&http_spec("api"), t(0)).await.unwrap();
+        let page = store
+            .create_page(&PageSpec {
+                slug: "platform".parse().unwrap(),
+                title: "Platform".into(),
+                description: None,
+                accent: None,
+                theme: Theme::Auto,
+                look: Default::default(),
+                published: true,
+                website: None,
+                custom_css: None,
+                sections: vec![SectionSpec {
+                    name: "Core".into(),
+                    components: vec![ComponentSpec::of_monitor("api".parse().unwrap(), None)],
+                }],
+            })
+            .await
+            .unwrap();
+        let Subscribed::Created(subscriber) = store
+            .subscribe(
+                page.id,
+                &NewSubscription::Email {
+                    email: "reader@example.com".parse().unwrap(),
+                    selection: Selection::all(),
+                },
+                t(0),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected a new subscription")
+        };
+        let token = store
+            .subscriber_token(subscriber.id, LinkPurpose::Confirm, t(100))
+            .await
+            .unwrap();
+        let opened = store
+            .open_subscriber_token(&token, LinkPurpose::Confirm, t(1))
+            .await
+            .unwrap()
+            .unwrap();
+        store.confirm_subscriber(opened.id, t(1)).await.unwrap();
+        store
+            .declare_incident(
+                &NewIncident {
+                    title: "API errors".into(),
+                    impact: Impact::Major,
+                    status: IncidentStatus::Investigating,
+                    message: "Looking.".into(),
+                    monitors: vec!["api".parse().unwrap()],
+                },
+                t(10),
+            )
+            .await
+            .unwrap();
+        let claimed = store
+            .claim_subscriber_outbox(t(11), 10, Duration::from_secs(60))
+            .await
+            .unwrap();
+        let kinds: Vec<&str> = claimed
+            .iter()
+            .map(|d| match &d.message {
+                Message::Confirm => "confirm",
+                Message::Event(event) => event.type_name(),
+                Message::Disabled => "disabled",
+            })
+            .collect();
+        assert_eq!(kinds, ["confirm", "incident.created"], "{scheme}");
+        // Claimed rows are leased: a second claim finds nothing.
+        assert!(
+            store
+                .claim_subscriber_outbox(t(11), 10, Duration::from_secs(60))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        for delivery in &claimed {
+            store
+                .mark_subscriber_message_sent(delivery.id, t(12))
+                .await
+                .unwrap();
+        }
+        assert_eq!(store.plaintext_secrets().await.unwrap(), 0);
+        assert_eq!(
+            store
+                .suppress_email(&"READER@example.com".parse().unwrap(), t(20))
+                .await
+                .unwrap()[0]
+                .status,
+            SubscriberStatus::Suppressed
+        );
+        // Subscribers and their messages go with the page.
+        assert!(store.delete_page(page.id).await.unwrap());
+        assert_eq!(store.subscriber(subscriber.id).await.unwrap(), None);
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+}

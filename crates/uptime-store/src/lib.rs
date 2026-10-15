@@ -22,6 +22,7 @@ mod queue;
 mod reseal;
 mod results;
 pub mod secrets;
+mod subscribers;
 mod tokens;
 
 use jiff::{Timestamp, civil::Date};
@@ -41,8 +42,14 @@ pub use pages::{Page, PageImage, PageSummary};
 pub use queue::Claim;
 pub use reseal::ResealReport;
 pub use results::{CertUpdate, CheckRecord, StoredCheck, WINDOW_LIMIT, WindowCheck};
+pub use subscribers::{
+    CONFIRM_FOR, DISABLE_AFTER, DISABLE_AFTER_FAILURES, EmailSettings, EmailSettingsInput,
+    LinkPurpose, MANAGE_FOR, Message, NewSubscription, Subscribed, Subscriber, SubscriberCounts,
+    SubscriberDelivery,
+};
 pub use toasty::migration::{MigrationReport, MigrationSet};
 pub use tokens::{ApiToken, NewApiToken};
+pub use uptime_domain::{DnsRecord, DomainState, SenderDomain};
 
 /// Every migration in `toasty/`, embedded at compile time.
 pub static MIGRATIONS: MigrationSet = toasty::embed_migrations!();
@@ -94,6 +101,8 @@ pub struct Store {
     db: toasty::Db,
     backend: Backend,
     sealer: secrets::Sealer,
+    /// Queue news for status page subscribers (email is configured).
+    subscriptions: bool,
 }
 
 impl Store {
@@ -142,6 +151,7 @@ impl Store {
             db,
             backend,
             sealer: secrets::Sealer::default(),
+            subscriptions: false,
         })
     }
 

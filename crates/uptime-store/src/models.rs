@@ -431,3 +431,90 @@ pub struct AuditEventRecord {
     /// JSON; never secrets.
     pub details: Option<String>,
 }
+
+/// A status page's email settings: its sender and whether visitors may subscribe.
+#[derive(Debug, toasty::Model)]
+#[table = "page_email_settings"]
+pub struct PageEmailRecord {
+    #[key]
+    pub page_id: i64,
+    /// Visitors may subscribe (when email is configured).
+    pub subscriptions: bool,
+    /// Subscribers hear about automatic incidents, not only declared ones.
+    pub notify_automatic: bool,
+    pub sender_name: Option<String>,
+    /// `status@mail.example.com`; used once its domain is verified.
+    pub sender_address: Option<String>,
+    pub reply_to: Option<String>,
+    /// The sender's domain at Lettermint.
+    pub domain_id: Option<String>,
+    pub domain_name: Option<String>,
+    /// `pending`, `verified` or `failed`.
+    pub domain_status: Option<String>,
+    /// JSON: the DNS records to publish, with their status.
+    pub domain_records: Option<String>,
+    pub domain_checked_at: Option<Timestamp>,
+}
+
+/// Someone following a status page, by email or webhook. Contact details are
+/// sealed; `email_index` and `url_index` are blind indexes for lookups.
+#[derive(Debug, toasty::Model)]
+#[table = "subscribers"]
+pub struct SubscriberRecord {
+    #[key]
+    #[auto]
+    pub id: i64,
+    #[index]
+    pub page_id: i64,
+    /// `email` or `webhook`.
+    pub kind: String,
+    /// Sealed. For webhooks, the owner's address (confirmation, failure notices).
+    pub email: String,
+    #[index]
+    pub email_index: String,
+    /// Webhooks: the sealed endpoint.
+    pub webhook_url: Option<String>,
+    #[index]
+    pub url_index: Option<String>,
+    /// Webhooks: the sealed signing secret.
+    pub webhook_secret: Option<String>,
+    /// Whether the signing secret was shown (it is shown once).
+    pub secret_shown: bool,
+    /// JSON list of component keys; `NULL` for every component.
+    pub components: Option<String>,
+    pub status: String,
+    /// Mixed into signed links; changed to revoke them.
+    pub link_salt: String,
+    pub created_at: Timestamp,
+    pub confirmed_at: Option<Timestamp>,
+    pub ended_at: Option<Timestamp>,
+    /// Webhooks: failed deliveries in a row, since `failing_since`.
+    pub failures: i32,
+    pub failing_since: Option<Timestamp>,
+    pub last_delivery_at: Option<Timestamp>,
+    pub last_error: Option<String>,
+}
+
+/// One message to one subscriber (the subscriber outbox).
+#[derive(Debug, toasty::Model)]
+#[table = "subscriber_outbox"]
+pub struct SubscriberOutboxRecord {
+    #[key]
+    #[auto]
+    pub id: i64,
+    #[index]
+    pub subscriber_id: i64,
+    /// `event`, `confirm` or `disabled`.
+    pub kind: String,
+    /// Identifies the news (e.g. `incident:7:update:31`): sent once per subscriber.
+    pub event_key: String,
+    /// JSON `PageEvent` for `event` messages.
+    pub payload: Option<String>,
+    pub attempts: i32,
+    #[index]
+    pub next_attempt_at: Timestamp,
+    pub created_at: Timestamp,
+    pub sent_at: Option<Timestamp>,
+    pub failed_at: Option<Timestamp>,
+    pub last_error: Option<String>,
+}

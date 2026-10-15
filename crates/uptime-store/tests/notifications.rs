@@ -18,6 +18,7 @@ fn channel(name: &str, kind: ChannelKind) -> ChannelSpec {
         ChannelKind::Slack => "https://hooks.slack.com/services/T/B/x",
         ChannelKind::Discord => "https://discord.com/api/webhooks/1/x",
         ChannelKind::Webhook => "https://ops.example.com/hook",
+        ChannelKind::Email => "mailto:ops@example.com",
     };
     ChannelSpec {
         name: name.into(),

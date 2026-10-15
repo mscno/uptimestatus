@@ -6,7 +6,10 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::{MonitorState, Routing, RoutingError};
+use crate::{EmailAddress, MonitorState, Routing, RoutingError};
+
+/// Most recipients one email channel sends to (Lettermint's per-message limit).
+pub const MAX_EMAIL_RECIPIENTS: usize = 10;
 
 /// Where alerts go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -18,16 +21,19 @@ pub enum ChannelKind {
     Discord,
     /// Any HTTP endpoint: JSON body, optional HMAC signature.
     Webhook,
+    /// Email to a few addresses (needs email configured).
+    Email,
 }
 
 impl ChannelKind {
-    pub const ALL: [Self; 3] = [Self::Slack, Self::Discord, Self::Webhook];
+    pub const ALL: [Self; 4] = [Self::Slack, Self::Discord, Self::Webhook, Self::Email];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Slack => "slack",
             Self::Discord => "discord",
             Self::Webhook => "webhook",
+            Self::Email => "email",
         }
     }
 
@@ -36,6 +42,7 @@ impl ChannelKind {
             Self::Slack => "Slack",
             Self::Discord => "Discord",
             Self::Webhook => "Webhook",
+            Self::Email => "Email",
         }
     }
 }
@@ -63,7 +70,9 @@ impl FromStr for ChannelKind {
 pub struct ChannelSpec {
     pub name: String,
     pub kind: ChannelKind,
-    /// The webhook URL. For Slack and Discord it is itself the secret.
+    /// The webhook URL. For Slack and Discord it is itself the secret. Email
+    /// channels hold their recipients as `mailto:a@example.com,b@example.com`
+    /// (see [`ChannelSpec::email_url`]).
     pub url: Url,
     /// Webhook only: signs each request (`X-Uptimestatus-Signature`).
     #[serde(default)]
@@ -102,6 +111,12 @@ pub enum ChannelError {
     UnsupportedScheme,
     #[error("Only webhook channels can have a signing secret.")]
     SecretNotSupported,
+    #[error("Add at least one recipient address.")]
+    NoRecipients,
+    #[error("At most {MAX_EMAIL_RECIPIENTS} recipients per channel.")]
+    TooManyRecipients,
+    #[error("{0}")]
+    InvalidRecipient(String),
     #[error(transparent)]
     Routing(#[from] RoutingError),
 }
@@ -114,16 +129,62 @@ impl ChannelError {
             Self::SecretNotSupported => "secret",
             Self::Routing(error) => error.field(),
             Self::InsecureUrl(_) | Self::WrongHost { .. } | Self::UnsupportedScheme => "url",
+            Self::NoRecipients | Self::TooManyRecipients | Self::InvalidRecipient(_) => {
+                "recipients"
+            }
         }
     }
 }
 
 impl ChannelSpec {
+    /// The `mailto:` URL an email channel stores its recipients in.
+    pub fn email_url(recipients: &[EmailAddress]) -> Url {
+        let list: Vec<&str> = recipients.iter().map(EmailAddress::as_str).collect();
+        // A mailto URL of valid addresses always parses.
+        #[allow(clippy::expect_used)]
+        Url::parse(&format!("mailto:{}", list.join(","))).expect("mailto URLs parse")
+    }
+
+    /// An email channel's recipients (empty for other kinds, or when invalid).
+    pub fn email_recipients(&self) -> Vec<EmailAddress> {
+        self.parse_recipients().unwrap_or_default()
+    }
+
+    fn parse_recipients(&self) -> Result<Vec<EmailAddress>, ChannelError> {
+        if self.kind != ChannelKind::Email {
+            return Ok(Vec::new());
+        }
+        if self.url.scheme() != "mailto" {
+            return Err(ChannelError::NoRecipients);
+        }
+        percent_decode(self.url.path())
+            .split(',')
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+            .map(|a| {
+                a.parse::<EmailAddress>()
+                    .map_err(|e| ChannelError::InvalidRecipient(e.to_string()))
+            })
+            .collect()
+    }
+
     /// This channel with its webhook URL reduced to scheme and host, and its
     /// signing secret masked (Slack and Discord URLs are themselves secrets).
+    /// Email recipients are masked (`al***@example.com`).
     pub fn redacted(&self) -> Self {
         let mut spec = self.clone();
-        crate::check::redact_url(&mut spec.url);
+        if spec.kind == ChannelKind::Email {
+            let masked: Vec<String> = self
+                .email_recipients()
+                .iter()
+                .map(EmailAddress::masked)
+                .collect();
+            if let Ok(url) = Url::parse(&format!("mailto:{}", masked.join(","))) {
+                spec.url = url;
+            }
+        } else {
+            crate::check::redact_url(&mut spec.url);
+        }
         spec.secret = spec.secret.as_ref().map(|_| crate::check::MASK.into());
         spec
     }
@@ -169,9 +230,45 @@ impl ChannelSpec {
                     return Err(ChannelError::UnsupportedScheme);
                 }
             }
+            ChannelKind::Email => {
+                let recipients = self.parse_recipients()?;
+                if recipients.is_empty() {
+                    return Err(ChannelError::NoRecipients);
+                }
+                if recipients.len() > MAX_EMAIL_RECIPIENTS {
+                    return Err(ChannelError::TooManyRecipients);
+                }
+                if self.secret.is_some() {
+                    return Err(ChannelError::SecretNotSupported);
+                }
+            }
         }
         Ok(())
     }
+}
+
+/// Decodes `%XX` escapes (mailto paths); invalid escapes are kept as-is.
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| char::from(b).to_digit(16);
+        if bytes[i] == b'%'
+            && let (Some(hi), Some(lo)) = (
+                bytes.get(i + 1).copied().and_then(hex),
+                bytes.get(i + 2).copied().and_then(hex),
+            )
+        {
+            // Two hex digits always fit a byte.
+            out.push(u8::try_from(hi * 16 + lo).unwrap_or(b'?'));
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// What happened.
@@ -379,7 +476,7 @@ mod tests {
         for kind in ChannelKind::ALL {
             assert_eq!(kind.as_str().parse::<ChannelKind>(), Ok(kind));
         }
-        assert!("email".parse::<ChannelKind>().is_err());
+        assert!("sms".parse::<ChannelKind>().is_err());
     }
 
     #[test]
@@ -421,5 +518,81 @@ mod tests {
     #[case(-5, "0s")]
     fn durations(#[case] seconds: i64, #[case] expected: &str) {
         assert_eq!(format_duration(seconds), expected);
+    }
+}
+
+#[cfg(test)]
+mod email_tests {
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    fn email(recipients: &[&str]) -> ChannelSpec {
+        let list: Vec<EmailAddress> = recipients.iter().map(|r| r.parse().unwrap()).collect();
+        ChannelSpec {
+            name: "On call".into(),
+            kind: ChannelKind::Email,
+            url: ChannelSpec::email_url(&list),
+            secret: None,
+            default_on: false,
+            routing: Default::default(),
+        }
+    }
+
+    #[test]
+    fn email_channels_keep_their_recipients_in_a_mailto_url() {
+        let channel = email(&["ops@example.com", "o'brien+alerts@Example.org"]);
+        assert_eq!(channel.validate(), Ok(()));
+        let recipients: Vec<String> = channel
+            .email_recipients()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            recipients,
+            ["ops@example.com", "o'brien+alerts@example.org"]
+        );
+        let json = serde_json::to_string(&channel).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ChannelSpec>(&json)
+                .unwrap()
+                .email_recipients(),
+            channel.email_recipients()
+        );
+    }
+
+    #[test]
+    fn email_channels_need_one_to_ten_valid_recipients() {
+        let none = ChannelSpec {
+            url: "mailto:".parse().unwrap(),
+            ..email(&["a@example.com"])
+        };
+        assert_eq!(none.validate(), Err(ChannelError::NoRecipients));
+        let many: Vec<String> = (0..11).map(|i| format!("u{i}@example.com")).collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        assert_eq!(
+            email(&many).validate(),
+            Err(ChannelError::TooManyRecipients)
+        );
+        let bad = ChannelSpec {
+            url: "mailto:ops@example.com,not-an-address".parse().unwrap(),
+            ..email(&["a@example.com"])
+        };
+        assert_eq!(bad.validate().unwrap_err().field(), "recipients");
+        let web = ChannelSpec {
+            url: "https://example.com/hook".parse().unwrap(),
+            ..email(&["a@example.com"])
+        };
+        assert_eq!(web.validate(), Err(ChannelError::NoRecipients));
+    }
+
+    #[test]
+    fn email_recipients_are_masked_when_redacted() {
+        let shown = email(&["alice@example.com", "bob@example.org"]).redacted();
+        assert_eq!(
+            shown.url.as_str(),
+            "mailto:al***@example.com,bo***@example.org"
+        );
+        assert!(!format!("{shown:?}").contains("alice"));
     }
 }

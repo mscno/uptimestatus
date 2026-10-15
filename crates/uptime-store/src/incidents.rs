@@ -4,7 +4,8 @@ use std::collections::HashMap;
 
 use jiff::Timestamp;
 use uptime_domain::{
-    Health, Impact, IncidentKind, IncidentStatus, MonitorId, MonitorKey, format_duration,
+    Health, Impact, IncidentKind, IncidentNotice, IncidentStatus, MonitorId, MonitorKey, PageEvent,
+    format_duration,
 };
 
 use crate::{
@@ -16,6 +17,7 @@ use crate::{
     pages::resolve_keys,
     results::{CheckRecord, StoredCheck, stored_check},
     secrets::Sealer,
+    subscribers,
 };
 
 /// Associated data for sealed check diagnostics.
@@ -90,6 +92,30 @@ impl Store {
             now,
         )
         .await?;
+        // A retroactive (already resolved) incident is history, not news.
+        if !resolved {
+            let notice = IncidentNotice {
+                id: record.id,
+                title: incident.title.trim().to_owned(),
+                status: incident.status,
+                impact: incident.impact,
+                message: incident.message.trim().to_owned(),
+                started_at: now,
+                resolved_at: None,
+                at: now,
+                monitors: incident.monitors.clone(),
+            };
+            subscribers::fan_out(
+                &mut tx,
+                self.subscriptions_enabled(),
+                &PageEvent::incident(true, notice),
+                &format!("incident:{}:created", record.id),
+                None,
+                false,
+                now,
+            )
+            .await?;
+        }
         let mut monitor_ids: Vec<i64> = ids.into_values().collect();
         monitor_ids.sort_unstable();
         monitor_ids.dedup();
@@ -134,7 +160,28 @@ impl Store {
             .resolved_at(resolved_at)
             .exec(&mut tx)
             .await?;
-        add_update(&mut tx, id, status, body.trim(), now).await?;
+        let update = add_update(&mut tx, id, status, body.trim(), now).await?;
+        let notice = IncidentNotice {
+            id,
+            title: current.title.clone(),
+            status,
+            impact: convert::parse("incidents.impact", &current.impact)?,
+            message: body.trim().to_owned(),
+            started_at: current.started_at,
+            resolved_at,
+            at: now,
+            monitors: incident_keys(&mut tx, id).await?,
+        };
+        subscribers::fan_out(
+            &mut tx,
+            self.subscriptions_enabled(),
+            &PageEvent::incident(false, notice),
+            &format!("incident:{id}:update:{update}"),
+            None,
+            false,
+            now,
+        )
+        .await?;
         tx.commit().await?;
         self.incident(id)
             .await?
@@ -142,6 +189,7 @@ impl Store {
     }
 
     pub async fn delete_incident(&self, id: i64) -> Result<bool> {
+        self.drop_incident_news(id).await?;
         let deleted = toasty::sql::statement(r#"DELETE FROM "incidents" WHERE "id" = $1"#)
             .bind(id)
             .exec(&mut self.db())
@@ -389,8 +437,8 @@ async fn add_update(
     status: IncidentStatus,
     body: &str,
     now: Timestamp,
-) -> Result<()> {
-    toasty::create!(IncidentUpdateRecord {
+) -> Result<i64> {
+    let record = toasty::create!(IncidentUpdateRecord {
         incident_id: incident_id,
         status: status.as_str(),
         body: body,
@@ -398,7 +446,51 @@ async fn add_update(
     })
     .exec(tx)
     .await?;
-    Ok(())
+    Ok(record.id)
+}
+
+/// The keys of the monitors an incident affects.
+async fn incident_keys(tx: &mut toasty::Transaction<'_>, incident: i64) -> Result<Vec<MonitorKey>> {
+    let ids: Vec<i64> =
+        IncidentMonitorRecord::filter(IncidentMonitorRecord::fields().incident_id().eq(incident))
+            .exec(&mut *tx)
+            .await?
+            .into_iter()
+            .map(|link| link.monitor_id)
+            .collect();
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut keys = MonitorRecord::filter(MonitorRecord::fields().id().in_list(ids))
+        .exec(&mut *tx)
+        .await?
+        .into_iter()
+        .map(|m| convert::parse::<MonitorKey>("monitors.key", &m.key))
+        .collect::<Result<Vec<_>>>()?;
+    keys.sort();
+    Ok(keys)
+}
+
+/// What subscribers hear when an automatic incident opens or resolves.
+fn auto_notice(
+    incident: i64,
+    monitor: &MonitorRecord,
+    status: IncidentStatus,
+    message: String,
+    started_at: Timestamp,
+    at: Timestamp,
+) -> Result<IncidentNotice> {
+    Ok(IncidentNotice {
+        id: incident,
+        title: format!("{} is down", monitor.name),
+        status,
+        impact: Impact::Major,
+        message,
+        started_at,
+        resolved_at: (status == IncidentStatus::Resolved).then_some(at),
+        at,
+        monitors: vec![convert::parse("monitors.key", &monitor.key)?],
+    })
 }
 
 /// Opens after confirmation and captures the whole failure streak, including
@@ -406,6 +498,7 @@ async fn add_update(
 pub(crate) async fn record_auto_failure(
     tx: &mut toasty::Transaction<'_>,
     sealer: &Sealer,
+    subscriptions: bool,
     monitor: &MonitorRecord,
     check: &CheckRecord,
     result: CheckResultRecord,
@@ -436,14 +529,8 @@ pub(crate) async fn record_auto_failure(
     })
     .exec(&mut *tx)
     .await?;
-    add_update(
-        tx,
-        record.id,
-        IncidentStatus::Investigating,
-        &format!("{} failed its checks.", monitor.name),
-        at,
-    )
-    .await?;
+    let opened = format!("{} failed its checks.", monitor.name);
+    add_update(tx, record.id, IncidentStatus::Investigating, &opened, at).await?;
     let fields = CheckResultRecord::fields();
     let mut failures = CheckResultRecord::filter(fields.monitor_id().eq(monitor.id))
         .order_by(fields.id().desc())
@@ -468,6 +555,24 @@ pub(crate) async fn record_auto_failure(
         monitor_id: monitor.id,
     })
     .exec(&mut *tx)
+    .await?;
+    let notice = auto_notice(
+        record.id,
+        monitor,
+        IncidentStatus::Investigating,
+        opened,
+        at,
+        at,
+    )?;
+    subscribers::fan_out(
+        tx,
+        subscriptions,
+        &PageEvent::incident(true, notice),
+        &format!("incident:{}:created", record.id),
+        None,
+        true,
+        at,
+    )
     .await?;
     Ok(())
 }
@@ -499,6 +604,7 @@ async fn add_check_update(
 pub(crate) async fn resolve_auto(
     tx: &mut toasty::Transaction<'_>,
     sealer: &Sealer,
+    subscriptions: bool,
     monitor: &MonitorRecord,
     recovery: CheckResultRecord,
 ) -> Result<()> {
@@ -514,7 +620,26 @@ pub(crate) async fn resolve_auto(
         .await?;
     let secs = at.duration_since(incident.started_at).as_secs();
     let body = format!("{name} recovered after {}.", format_duration(secs));
-    add_update(tx, incident.id, IncidentStatus::Resolved, &body, at).await
+    add_update(tx, incident.id, IncidentStatus::Resolved, &body, at).await?;
+    let notice = auto_notice(
+        incident.id,
+        monitor,
+        IncidentStatus::Resolved,
+        body,
+        incident.started_at,
+        at,
+    )?;
+    subscribers::fan_out(
+        tx,
+        subscriptions,
+        &PageEvent::incident(false, notice),
+        &format!("incident:{}:resolved", incident.id),
+        None,
+        true,
+        at,
+    )
+    .await?;
+    Ok(())
 }
 
 async fn open_auto_incident(

@@ -70,6 +70,38 @@ impl Store {
         })
         .exec(&mut tx)
         .await?;
+        // Subscribers hear about statuses set by admins; clearing an override
+        // hands the component back to its checks, which is not news.
+        if let Some(status) = status {
+            let name = match (component.label(), component.monitor_key()) {
+                (Some(label), _) => label.to_owned(),
+                (None, Some(monitor)) => MonitorRecord::filter_by_key(monitor.as_str())
+                    .first()
+                    .exec(&mut tx)
+                    .await?
+                    .map_or_else(|| key.to_owned(), |m| m.name),
+                (None, None) => key.to_owned(),
+            };
+            let notice = uptime_domain::ComponentNotice {
+                key: key.to_owned(),
+                name,
+                status: status.as_str().to_owned(),
+                previous: previous.map(|s| s.as_str().to_owned()),
+                note: note.map(str::to_owned),
+                at,
+                monitors: component.monitor_key().cloned().into_iter().collect(),
+            };
+            crate::subscribers::fan_out(
+                &mut tx,
+                self.subscriptions_enabled(),
+                &uptime_domain::PageEvent::ComponentStatusChanged(notice),
+                &format!("component:{}", record.id),
+                Some(page_id),
+                false,
+                at,
+            )
+            .await?;
+        }
         tx.commit().await?;
         event(record)
     }

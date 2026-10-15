@@ -51,6 +51,9 @@ pub const SEALED_COLUMNS: &[(&str, &str)] = &[
     ("notification_channels", "secret"),
     ("check_results", "response_body"),
     ("incident_updates", "check_json"),
+    ("subscribers", "email"),
+    ("subscribers", "webhook_url"),
+    ("subscribers", "webhook_secret"),
 ];
 
 /// A malformed `secrets.keys` value.

@@ -16,7 +16,7 @@ const BATCH: i64 = 200;
 pub struct ResealReport {
     /// Values (re)sealed per `"table.column"`, for columns that changed.
     pub sealed: Vec<(String, u64)>,
-    /// Push monitors whose token index was recomputed.
+    /// Push monitors and subscribers whose blind indexes were recomputed.
     pub indexed: u64,
 }
 
@@ -89,7 +89,7 @@ impl Store {
                 report.sealed.push((format!("{table}.{column}"), changed));
             }
         }
-        report.indexed = self.reindex_push_tokens().await?;
+        report.indexed = self.reindex_push_tokens().await? + self.reindex_subscribers().await?;
         if report.total() > 0 {
             tracing::info!(sealed = ?report.sealed, indexed = report.indexed, "secrets resealed");
         }

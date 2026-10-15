@@ -187,8 +187,15 @@ impl Store {
             let monitor = MonitorRecord::filter_by_id(record.monitor_id.0)
                 .get(&mut tx)
                 .await?;
-            incidents::record_auto_failure(&mut tx, self.sealer(), &monitor, record, stored)
-                .await?;
+            incidents::record_auto_failure(
+                &mut tx,
+                self.sealer(),
+                self.subscriptions_enabled(),
+                &monitor,
+                record,
+                stored,
+            )
+            .await?;
         } else if matches!(
             record.runtime.state,
             MonitorState::Up | MonitorState::Degraded
@@ -197,7 +204,14 @@ impl Store {
             let monitor = MonitorRecord::filter_by_id(record.monitor_id.0)
                 .get(&mut tx)
                 .await?;
-            incidents::resolve_auto(&mut tx, self.sealer(), &monitor, stored).await?;
+            incidents::resolve_auto(
+                &mut tx,
+                self.sealer(),
+                self.subscriptions_enabled(),
+                &monitor,
+                stored,
+            )
+            .await?;
         }
         if let Some(transition) = record.transition {
             let monitor = MonitorRecord::filter_by_id(record.monitor_id.0)

@@ -47,6 +47,26 @@ impl Store {
         .exec(&mut tx)
         .await?;
         link(&mut tx, record.id, &ids).await?;
+        if spec.starts_at > now {
+            let notice = uptime_domain::MaintenanceNotice {
+                id: record.id,
+                title: spec.title.trim().to_owned(),
+                description: spec.description.clone(),
+                starts_at: spec.starts_at,
+                ends_at: spec.ends_at,
+                monitors: spec.monitors.clone(),
+            };
+            crate::subscribers::fan_out(
+                &mut tx,
+                self.subscriptions_enabled(),
+                &uptime_domain::PageEvent::MaintenanceScheduled(notice),
+                &format!("maintenance:{}:scheduled", record.id),
+                None,
+                false,
+                now,
+            )
+            .await?;
+        }
         tx.commit().await?;
         self.maintenance(record.id)
             .await?
@@ -141,6 +161,45 @@ impl Store {
         }
         windows.sort_by_key(|w| (w.spec.starts_at, w.id));
         Ok(windows)
+    }
+
+    /// Queues "started" and "completed" news for maintenance occurrences that
+    /// began or ended in `(since, now]`; each is queued once. Returns how many
+    /// messages were queued.
+    pub async fn announce_maintenance(&self, since: Timestamp, now: Timestamp) -> Result<usize> {
+        if !self.subscriptions_enabled() {
+            return Ok(0);
+        }
+        let mut queued = 0;
+        for window in self.maintenances_between(since, now).await? {
+            let notice = uptime_domain::MaintenanceNotice {
+                id: window.id,
+                title: window.spec.title.clone(),
+                description: window.spec.description.clone(),
+                starts_at: window.spec.starts_at,
+                ends_at: window.spec.ends_at,
+                monitors: window.spec.monitors.clone(),
+            };
+            let start = window.spec.starts_at;
+            let end = window.spec.ends_at;
+            let mut events = Vec::new();
+            if start > since && start <= now {
+                events.push((
+                    uptime_domain::PageEvent::MaintenanceStarted(notice.clone()),
+                    format!("maintenance:{}:{}:started", window.id, start.as_second()),
+                ));
+            }
+            if end > since && end <= now {
+                events.push((
+                    uptime_domain::PageEvent::MaintenanceCompleted(notice),
+                    format!("maintenance:{}:{}:completed", window.id, start.as_second()),
+                ));
+            }
+            for (event, key) in events {
+                queued += self.notify_subscribers(&event, &key, None, now).await?;
+            }
+        }
+        Ok(queued)
     }
 
     /// Monitors inside an active window at `at`.

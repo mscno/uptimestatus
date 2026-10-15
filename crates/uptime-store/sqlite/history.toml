@@ -64,3 +64,8 @@ snapshot_name = "0011_snapshot.toml"
 id = 179139631684377965
 name = "0012_page_components_and_css.sql"
 snapshot_name = "0012_snapshot.toml"
+
+[[migrations]]
+id = 7223224927729040595
+name = "0013_subscribers.sql"
+snapshot_name = "0013_snapshot.toml"

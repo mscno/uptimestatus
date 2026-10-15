@@ -50,6 +50,9 @@ pub enum StoreError {
     #[error("custom domain {0} not found")]
     DomainNotFound(i64),
 
+    #[error("subscriber {0} not found")]
+    SubscriberNotFound(i64),
+
     #[error("group monitors would include each other: {}", .0.join(", "))]
     GroupCycle(Vec<String>),
 

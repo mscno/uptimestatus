@@ -22,7 +22,7 @@ use crate::{
 const PAGE: u32 = 50;
 
 /// The action families offered as filters.
-const FAMILIES: [&str; 14] = [
+const FAMILIES: [&str; 15] = [
     "auth",
     "bulk",
     "channel",
@@ -37,6 +37,7 @@ const FAMILIES: [&str; 14] = [
     "token",
     "uptime",
     "secrets",
+    "subscriber",
 ];
 
 /// `?actor=&action=&target=kind:id&before=`; empty values mean "any".

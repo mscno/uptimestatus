@@ -255,6 +255,8 @@ pub(crate) async fn edit_page(cx: &Cx) -> Result<impl View> {
                 <h1>(page.spec.title.as_str())</h1>
                 <span class="spacer"></span>
                 <a class="btn" href=(public)>"View page"</a>
+                <a class="btn" href=(format!("{action}/subscribers"))>"Subscribers"</a>
+                <a class="btn" href=(format!("{action}/email"))>"Email"</a>
                 <a class="btn" href=(format!("/admin/pages/new?from={id}"))>"Duplicate"</a>
                 delete_button(action: &delete_url, heading: "Delete this status page?",
                     body: "Its public URL and custom domains stop working. Monitors are kept.")

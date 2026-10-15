@@ -60,3 +60,9 @@ path = "/data"         # uploaded logos and favicons; uploads are off when unset
 # Encrypts secrets at rest; required outside debug builds. Prefer the
 # UPTIMESTATUS_SECRETS__KEYS environment variable to keeping keys in a file.
 # keys = "k1a2b3c4d:<base64 of 32 bytes>"   # `uptimestatus secrets generate-key`
+
+[email]
+# Lettermint. Email alerts and status page subscriptions are off unless the
+# project token is set; keep tokens in the environment
+# (UPTIMESTATUS_EMAIL__LETTERMINT_PROJECT_TOKEN, ..._TEAM_TOKEN, ..._WEBHOOK_SECRET).
+# default_from = "uptimestatus <alerts@example.com>"   # required with a token

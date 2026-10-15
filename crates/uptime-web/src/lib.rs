@@ -23,6 +23,7 @@ mod pages;
 mod state;
 mod status;
 mod views;
+mod webhooks;
 
 use axum::{
     Router,
@@ -30,7 +31,7 @@ use axum::{
     http::{HeaderValue, Method, StatusCode, header},
     middleware::Next,
     response::{IntoResponse as _, Response},
-    routing::get,
+    routing::{get, post},
 };
 use topcoat::{
     cookie::RouterBuilderCookieExt as _,
@@ -48,8 +49,13 @@ pub use status::PageCache;
 pub fn public_router(state: AppState) -> Router {
     let media = state.media.clone();
     let origin_state = state.clone();
+    let hook_state = state.clone();
     let routes = Router::new()
         .route("/healthz", get(internal::healthz))
+        .route(
+            "/webhooks/lettermint",
+            post(move |headers, body| webhooks::lettermint(hook_state.clone(), headers, body)),
+        )
         .route("/static/{*path}", get(assets::serve))
         .route(
             "/media/{name}",
@@ -153,6 +159,16 @@ fn topcoat_router(state: &AppState) -> topcoat::router::Router {
         .route(status::status_body_patch)
         .route(status::summary_json)
         .route(status::status_feed)
+        .page(status::subscribe_page)
+        .route(status::subscribe_email)
+        .route(status::subscribe_webhook)
+        .route(status::confirm_page)
+        .route(status::confirm)
+        .route(status::manage_page)
+        .route(status::save_subscription)
+        .route(status::rotate_secret)
+        .route(status::unsubscribe_page)
+        .route(status::unsubscribe)
         .route(status::custom_css)
         .route(status::page_badge)
         .route(status::status_badge)
@@ -214,6 +230,15 @@ fn topcoat_router(state: &AppState) -> topcoat::router::Router {
         .route(admin::add_domain)
         .route(admin::verify_domain)
         .route(admin::remove_domain)
+        .page(admin::email_page)
+        .route(admin::save_email)
+        .route(admin::setup_domain)
+        .route(admin::verify_sender_domain)
+        .route(admin::send_test)
+        .page(admin::subscribers_page)
+        .route(admin::stop_subscriber)
+        .route(admin::remove_subscriber)
+        .route(admin::export_subscribers)
         .page(admin::alerts_page)
         .page(admin::new_channel)
         .route(admin::create_channel)

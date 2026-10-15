@@ -20,14 +20,16 @@ use topcoat::{
     },
     view::{View, ViewExt as _, component, view},
 };
-use uptime_domain::{Alert, AlertEvent, ChannelKind, ChannelSpec, QuietHours, Routing};
+use uptime_domain::{
+    Alert, AlertEvent, ChannelKind, ChannelSpec, EmailAddress, QuietHours, Routing,
+};
 use uptime_store::{AdminUser, Channel, DeliveryStatus, StoreError};
 use url::Url;
 
 use super::{
     Id,
     form::FormErrors,
-    views::{checkbox, text_field},
+    views::{checkbox, text_area, text_field},
 };
 use crate::audit;
 use crate::{
@@ -48,6 +50,8 @@ pub(crate) struct ChannelForm {
     url: String,
     /// Webhooks only; blank keeps the current secret when editing.
     secret: String,
+    /// Email only: addresses, one per line or comma-separated.
+    recipients: String,
     default_on: Option<String>,
     /// Minutes a monitor must be down before this channel hears about it.
     escalate_after: String,
@@ -121,11 +125,22 @@ impl ChannelForm {
     }
 
     fn from_spec(spec: &ChannelSpec) -> Self {
+        let email = spec.kind == ChannelKind::Email;
         Self {
             name: spec.name.clone(),
             kind: spec.kind.as_str().into(),
-            url: spec.url.to_string(),
+            url: if email {
+                String::new()
+            } else {
+                spec.url.to_string()
+            },
             secret: String::new(),
+            recipients: spec
+                .email_recipients()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
             default_on: spec.default_on.then(|| "on".into()),
             escalate_after: if spec.routing.escalates() {
                 spec.routing.escalate_after_mins.to_string()
@@ -161,20 +176,52 @@ impl ChannelForm {
     }
 
     /// `current_secret`: what to keep when the secret field is left blank.
-    fn to_spec(&self, current_secret: Option<String>) -> Result<ChannelSpec, FormErrors> {
+    /// `email`: whether email is configured (email channels need it).
+    fn to_spec(
+        &self,
+        current_secret: Option<String>,
+        email: bool,
+    ) -> Result<ChannelSpec, FormErrors> {
         let mut errors = FormErrors::default();
         let kind = self.kind.parse::<ChannelKind>().unwrap_or_else(|message| {
             errors.insert("kind", message);
             ChannelKind::Webhook
         });
-        let url = self.url.trim().parse::<Url>().unwrap_or_else(|_| {
+        if kind == ChannelKind::Email && !email {
             errors.insert(
-                "url",
-                "Enter a full URL, e.g. https://hooks.slack.com/services/…",
+                "kind",
+                "Email is not configured: set email.lettermint_project_token and email.default_from.",
             );
-            // Placeholder so validation below can still report the name.
-            Url::parse("https://invalid.invalid/").unwrap_or_else(|_| unreachable!())
-        });
+        }
+        let recipients = if kind == ChannelKind::Email {
+            let mut list = Vec::new();
+            for part in self
+                .recipients
+                .split(|c: char| c == ',' || c == ';' || c.is_whitespace())
+                .filter(|p| !p.is_empty())
+            {
+                match part.parse::<EmailAddress>() {
+                    Ok(address) if !list.contains(&address) => list.push(address),
+                    Ok(_) => {}
+                    Err(error) => errors.insert("recipients", error.to_string()),
+                }
+            }
+            Some(list)
+        } else {
+            None
+        };
+        let url = if let Some(recipients) = &recipients {
+            ChannelSpec::email_url(recipients)
+        } else {
+            self.url.trim().parse::<Url>().unwrap_or_else(|_| {
+                errors.insert(
+                    "url",
+                    "Enter a full URL, e.g. https://hooks.slack.com/services/…",
+                );
+                // Placeholder so validation below can still report the name.
+                Url::parse("https://invalid.invalid/").unwrap_or_else(|_| unreachable!())
+            })
+        };
         let secret = match kind {
             ChannelKind::Webhook => Some(self.secret.trim().to_owned())
                 .filter(|s| !s.is_empty())
@@ -223,8 +270,9 @@ impl ChannelForm {
             },
         };
         if let Err(error) = spec.validate() {
-            // A bad URL already has its own message.
-            if !(error.field() == "url" && errors.get("url").is_some()) {
+            // A bad URL or address already has its own message.
+            let field = error.field();
+            if !((field == "url" || field == "recipients") && errors.get(field).is_some()) {
                 errors.insert(error.field(), error.to_string());
             }
         }
@@ -239,12 +287,21 @@ impl ChannelForm {
     }
 }
 
-/// `https://hooks.slack.com/…`: enough to recognise, not enough to use.
-fn destination(url: &Url) -> String {
+/// `https://hooks.slack.com/…` or masked addresses: enough to recognise, not
+/// enough to use.
+fn destination(spec: &ChannelSpec) -> String {
+    if spec.kind == ChannelKind::Email {
+        return spec
+            .email_recipients()
+            .iter()
+            .map(EmailAddress::masked)
+            .collect::<Vec<_>>()
+            .join(", ");
+    }
     format!(
         "{}://{}/…",
-        url.scheme(),
-        url.host_str().unwrap_or_default()
+        spec.url.scheme(),
+        spec.url.host_str().unwrap_or_default()
     )
 }
 
@@ -265,7 +322,7 @@ pub(crate) async fn alerts_page(cx: &Cx) -> Result<impl View> {
             if channels.is_empty() {
                 <div class="card empty">
                     <p><strong>"No alert channels yet."</strong></p>
-                    <p>"Add Slack, Discord or a webhook, then choose it on each monitor."</p>
+                    <p>"Add Slack, Discord, email or a webhook, then choose it on each monitor."</p>
                 </div>
             } else {
                 <div class="card table-wrap">
@@ -277,7 +334,7 @@ pub(crate) async fn alerts_page(cx: &Cx) -> Result<impl View> {
                                 <tr>
                                     <td class="name-cell"><a href=(format!("/admin/alerts/{}", channel.id))>(channel.spec.name.as_str())</a></td>
                                     <td>(channel.spec.kind.label())</td>
-                                    <td class="mono small">(destination(&channel.spec.url))</td>
+                                    <td class="mono small">(destination(&channel.spec))</td>
                                     <td class="small hide-sm">(routing_summary(&channel.spec.routing))</td>
                                     <td class="small hide-sm">(if channel.spec.default_on { "on by default" } else { "—" })</td>
                                     <td class="small" id=(format!("test-{}", channel.id))></td>
@@ -331,6 +388,8 @@ async fn channel_form(
     errors: &FormErrors,
     action: &str,
     editing: bool,
+    /// Whether email is configured.
+    email: bool,
 ) -> Result<impl View> {
     let kinds = [
         (ChannelKind::Slack, "Slack (incoming webhook)"),
@@ -338,6 +397,14 @@ async fn channel_form(
         (
             ChannelKind::Webhook,
             "Webhook (JSON POST, optional HMAC signature)",
+        ),
+        (
+            ChannelKind::Email,
+            if email {
+                "Email (up to 10 addresses)"
+            } else {
+                "Email (not configured)"
+            },
         ),
     ];
     let kind_signal = format!("'{}'", form.kind.replace('\'', ""));
@@ -359,15 +426,25 @@ async fn channel_form(
                         <label for="field-kind">"Kind"</label>
                         <select id="field-kind" name="kind" data-bind:kind="">
                             for (kind, label) in kinds {
-                                <option value=(kind.as_str()) selected=(form.kind == kind.as_str())>(label)</option>
+                                <option value=(kind.as_str()) selected=(form.kind == kind.as_str())
+                                    disabled=((kind == ChannelKind::Email && !email).then_some(""))>(label)</option>
                             }
                         </select>
                         if let Some(error) = errors.get("kind") { <span class="error">(error.to_owned())</span> }
                     </div>
                 </div>
-                text_field(name: "url", label: "Webhook URL", value: &form.url, errors: errors,
-                    placeholder: "https://hooks.slack.com/services/…",
-                    hint: "Slack: Apps → Incoming Webhooks. Discord: Channel settings → Integrations → Webhooks.")
+                <div data-show="$kind != 'email'">
+                    text_field(name: "url", label: "Webhook URL", value: &form.url, errors: errors,
+                        placeholder: "https://hooks.slack.com/services/…",
+                        hint: "Slack: Apps → Incoming Webhooks. Discord: Channel settings → Integrations → Webhooks.")
+                </div>
+                <div data-show="$kind == 'email'">
+                    text_area(name: "recipients", label: "Recipients", value: &form.recipients, errors: errors,
+                        hint: "Up to 10 addresses, one per line. Sent from the default sender (email.default_from).")
+                    if !email {
+                        <p class="flash">"Email is not configured. Set email.lettermint_project_token and email.default_from to send alerts by email."</p>
+                    }
+                </div>
                 <div data-show="$kind == 'webhook'">
                     text_field(name: "secret", label: "Signing secret", value: "", errors: errors, hint: secret_hint)
                 </div>
@@ -411,7 +488,7 @@ pub(crate) async fn new_channel(cx: &Cx) -> Result<impl View> {
     Ok(view! {
         admin_shell(title: "New alert channel", admin: &admin, section: "alerts",
             <div class="page-head"><h1>"New alert channel"</h1></div>
-            <div class="card">channel_form(form: &form, errors: &errors, action: "/admin/alerts", editing: false)</div>
+            <div class="card">channel_form(form: &form, errors: &errors, action: "/admin/alerts", editing: false, email: app(cx).email_enabled())</div>
         )
     })
 }
@@ -419,7 +496,7 @@ pub(crate) async fn new_channel(cx: &Cx) -> Result<impl View> {
 #[route(POST "/admin/alerts")]
 pub(crate) async fn create_channel(cx: &Cx, Form(input): Form<ChannelForm>) -> Result<Response> {
     let admin = require_admin(cx).await?;
-    match input.to_spec(None) {
+    match input.to_spec(None, app(cx).email_enabled()) {
         Ok(spec) => {
             let channel = app(cx)
                 .store
@@ -476,7 +553,7 @@ pub(crate) async fn edit_channel(cx: &Cx) -> Result<impl View> {
                 delete_button(action: &delete_url, heading: "Delete this channel?",
                     body: "Monitors stop alerting it, and its queued alerts are dropped.")
             </div>
-            <div class="card">channel_form(form: &form, errors: &errors, action: &action, editing: true)</div>
+            <div class="card">channel_form(form: &form, errors: &errors, action: &action, editing: true, email: app(cx).email_enabled())</div>
         )
     })
 }
@@ -486,7 +563,7 @@ pub(crate) async fn update_channel(cx: &Cx, Form(input): Form<ChannelForm>) -> R
     let admin = require_admin(cx).await?;
     let channel = load(cx).await?;
     let action = format!("/admin/alerts/{}", channel.id);
-    match input.to_spec(channel.spec.secret.clone()) {
+    match input.to_spec(channel.spec.secret.clone(), app(cx).email_enabled()) {
         Ok(spec) => match app(cx).store.update_channel(channel.id, &spec).await {
             Ok(_) => {
                 tracing::info!(channel = channel.id, by = %admin.login, "alert channel updated");
@@ -606,7 +683,7 @@ async fn form_page(
     let html = view! { cx =>
         admin_shell(title: title, admin: admin, section: "alerts",
             <div class="page-head"><h1>(title)</h1></div>
-            <div class="card">channel_form(form: input, errors: errors, action: action, editing: editing)</div>
+            <div class="card">channel_form(form: input, errors: errors, action: action, editing: editing, email: app(cx).email_enabled())</div>
         )
     }
     .single()

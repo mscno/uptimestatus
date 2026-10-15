@@ -7,6 +7,7 @@
 mod badge;
 mod feed;
 mod history;
+pub(crate) mod subscribe;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -46,6 +47,10 @@ use tokio::sync::broadcast::error::RecvError;
 pub(crate) use badge::{page_badge, response_badge, status_badge, uptime_badge};
 pub(crate) use feed::status_feed;
 pub(crate) use history::{incident_page, incidents_page, maintenance_page};
+pub(crate) use subscribe::{
+    confirm, confirm_page, manage_page, rotate_secret, save_subscription, subscribe_email,
+    subscribe_page, subscribe_webhook, unsubscribe, unsubscribe_page,
+};
 
 use crate::{
     auth::{app, current_admin},
@@ -63,6 +68,7 @@ const CACHE_TTL: Duration = Duration::from_secs(10);
 /// Everything a status page renders, built from the database.
 #[derive(Clone, Debug)]
 pub(crate) struct StatusView {
+    page_id: i64,
     slug: String,
     title: String,
     description: Option<String>,
@@ -84,6 +90,8 @@ pub(crate) struct StatusView {
     monitor_ids: Vec<uptime_domain::MonitorId>,
     /// The page's custom CSS and a version for cache busting.
     custom_css: Option<(Arc<str>, String)>,
+    /// Visitors may subscribe (email is configured and the page allows it).
+    subscriptions: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -379,7 +387,11 @@ async fn build(store: &Store, slug: &str) -> Result<Option<StatusView>> {
         .as_deref()
         .map(crate::media::url)
         .or_else(|| logo.clone());
+    let subscriptions =
+        store.subscriptions_enabled() && store.email_settings(page.id).await?.subscriptions;
     Ok(Some(StatusView {
+        page_id: page.id,
+        subscriptions,
         slug: page.spec.slug.to_string(),
         title: page.spec.title,
         description: page.spec.description,
@@ -497,6 +509,8 @@ pub(crate) enum Tab {
     Status,
     Maintenance,
     Incidents,
+    /// Subscribing and managing a subscription (no tab of its own).
+    Subscribe,
 }
 
 /// Where the page's links start: `/s/{slug}`, or nothing on its custom
@@ -604,6 +618,10 @@ async fn frame(
                     </nav>
                     (child)
                     <footer class="footer">
+                        if view.subscriptions {
+                            <a href=(format!("{base}/subscribe"))>"Subscribe to updates"</a>
+                            " · "
+                        }
                         <a href=(format!("{base}/feed.atom")) rel="alternate" type="application/atom+xml">"Atom feed"</a>
                         " · "
                         <a href="https://github.com/mscno/uptimestatus">"Powered by uptimestatus"</a>

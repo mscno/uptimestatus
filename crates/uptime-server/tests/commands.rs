@@ -40,6 +40,7 @@ fn config(db: &TestDb) -> Config {
         secrets: SecretsConfig {
             keys: Some(Secret::new(uptime_testkit::TEST_KEYS)),
         },
+        email: Default::default(),
     }
 }
 

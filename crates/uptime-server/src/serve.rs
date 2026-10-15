@@ -9,8 +9,8 @@ use uptime_domain::Edge;
 use uptime_notify::Sender;
 use uptime_probe::{AddressPolicy, DomainInspector, Prober, ProberConfig};
 use uptime_runtime::{
-    Cluster, DomainVerifier, EventBus, Handlers, Janitor, Notifier, NotifierConfig, Reload,
-    Scheduler, SchedulerConfig, VerifierConfig, VerifyDomain,
+    Cluster, Courier, DomainVerifier, EventBus, Handlers, Janitor, Notifier, NotifierConfig,
+    Reload, Scheduler, SchedulerConfig, VerifierConfig, VerifyDomain,
 };
 use uptime_store::bus::BusMessage;
 use uptime_store::{Backend, ConnectOptions, Store};
@@ -99,6 +99,7 @@ pub async fn connect(config: &Config) -> anyhow::Result<Store> {
     )
     .await
     .context("connecting to the database")?;
+    let store = store.with_subscriptions(config.email.enabled());
     Ok(match keyring {
         Some(keyring) => store.with_keyring(keyring),
         None => store,
@@ -159,10 +160,15 @@ pub fn auth_settings(config: &Config) -> anyhow::Result<AuthSettings> {
     Ok(settings)
 }
 
-/// Builds the alert sender: webhooks obey the probes' address policy.
+/// Builds the alert sender: webhooks obey the probes' address policy; email
+/// goes through Lettermint when configured.
 pub fn sender(config: &Config, prober: &Arc<Prober>) -> anyhow::Result<Sender> {
     let user_agent = format!("uptimestatus/{}", env!("CARGO_PKG_VERSION"));
-    Ok(Sender::guarded(prober, &user_agent)?.with_app_url(config.app_url.clone()))
+    let sender = Sender::guarded(prober, &user_agent)?.with_app_url(config.app_url.clone());
+    Ok(match config.email.mailer()? {
+        Some(mailer) => sender.with_mailer(mailer),
+        None => sender,
+    })
 }
 
 /// Background services the web state hands work to.
@@ -183,6 +189,13 @@ pub fn app_state(
 ) -> anyhow::Result<AppState> {
     let mut state = AppState::new(store, Hosts::new(config.app_url.clone(), &config.edge_host))
         .with_sender(sender(config, &prober)?)
+        .with_lettermint_webhook_secret(
+            config
+                .email
+                .webhook_secret
+                .as_ref()
+                .map(|s| s.expose().to_owned()),
+        )
         .with_domains(services.domains)
         .with_edge(edge(config))
         .with_auth(auth_settings(config)?)
@@ -360,6 +373,20 @@ pub async fn run(
         )
         .with_events(events.clone());
         background.push(tokio::spawn(notifier.run(shutdown.clone())));
+        let alerts = sender(config, &prober)?;
+        if alerts.mailer().is_some() {
+            let courier = Courier::new(
+                store.clone(),
+                alerts,
+                config.app_url.clone(),
+                NotifierConfig::default(),
+            );
+            background.push(tokio::spawn(courier.run(shutdown.clone())));
+        } else {
+            tracing::info!(
+                "email disabled (email.lettermint_project_token is not set): no email alerts or status page subscriptions"
+            );
+        }
         Some(waker)
     } else {
         if roles.worker {

@@ -1546,6 +1546,54 @@
 		margin-top: var(--sb-space-4);
 	}
 
+	/* Subscribing to a status page. */
+	.subscribe {
+		display: grid;
+		gap: var(--sb-space-4);
+	}
+
+	.subscribe-card,
+	.subscribe-done {
+		background: var(--sb-surface-card);
+		border: 1px solid var(--sb-border);
+		border-radius: var(--sb-radius);
+		padding: var(--sb-space-4) var(--sb-space-5);
+	}
+
+	.subscribe-card h2,
+	.subscribe-done h2 {
+		margin: 0 0 var(--sb-space-2);
+	}
+
+	.subscribe-done form + form {
+		margin-top: var(--sb-space-3);
+	}
+
+	.subscribe-components {
+		border: 0;
+		padding: 0;
+		margin: var(--sb-space-3) 0;
+	}
+
+	.subscribe .choice,
+	.subscribe-done .choice {
+		display: block;
+		margin: var(--sb-space-1) 0;
+	}
+
+	.choice-nested {
+		padding-left: var(--sb-space-5);
+	}
+
+	/* The honeypot: invisible to people, filled in by naive bots. */
+	.hp {
+		position: absolute;
+		left: -10000px;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+	}
+
 	.month-card h3 {
 		margin: 0 0 var(--sb-space-1);
 		padding-bottom: var(--sb-space-3);

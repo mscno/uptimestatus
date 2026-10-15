@@ -39,6 +39,10 @@ pub struct AppState {
     pub media: Option<MediaStore>,
     /// Status pages changed without a check (open pages refresh at once).
     pub page_changes: PageChanges,
+    /// Verifies Lettermint's webhook (bounces, complaints). `None` disables it.
+    pub lettermint_webhook_secret: Option<String>,
+    /// Rate limits for public subscribe forms.
+    pub(crate) subscribe_limits: crate::status::subscribe::Limits,
 }
 
 impl AppState {
@@ -56,6 +60,8 @@ impl AppState {
             sender: None,
             cluster: None,
             media: None,
+            lettermint_webhook_secret: None,
+            subscribe_limits: crate::status::subscribe::Limits::default(),
             domains: DomainCache::default(),
             auth: Arc::new(AuthSettings::disabled()),
             events: EventBus::default(),
@@ -140,6 +146,24 @@ impl AppState {
             sender: Some(sender),
             ..self
         }
+    }
+
+    #[must_use]
+    pub fn with_lettermint_webhook_secret(self, secret: Option<String>) -> Self {
+        Self {
+            lettermint_webhook_secret: secret.filter(|s| !s.trim().is_empty()),
+            ..self
+        }
+    }
+
+    /// The mailer, when email is configured.
+    pub fn mailer(&self) -> Option<&uptime_notify::Mailer> {
+        self.sender.as_ref().and_then(Sender::mailer)
+    }
+
+    /// Whether email (alerts, subscriptions) is configured.
+    pub fn email_enabled(&self) -> bool {
+        self.mailer().is_some()
     }
 
     #[must_use]

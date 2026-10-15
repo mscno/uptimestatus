@@ -11,6 +11,7 @@ mod images;
 mod incidents;
 pub mod page_form;
 mod pages;
+mod subscriptions;
 mod tokens;
 mod views;
 
@@ -110,6 +111,10 @@ pub(crate) use incidents::{
 };
 pub(crate) use pages::{
     create_page, delete_page, edit_page, export_toml, new_page, pages_list, update_page,
+};
+pub(crate) use subscriptions::{
+    email_page, export_subscribers, remove_subscriber, save_email, send_test, setup_domain,
+    stop_subscriber, subscribers_page, verify_domain as verify_sender_domain,
 };
 pub(crate) use tokens::{api_page, create_token, revoke_token};
 

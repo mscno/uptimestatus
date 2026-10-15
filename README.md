@@ -23,7 +23,10 @@ or a Docker container, with SQLite, PostgreSQL or Turso for storage.
   charts, Atom feeds, custom domains, logos and a choice of pixel or clean styling. Manual
   components and status overrides, custom CSS and README badges; see
   [Status pages](#status-pages).
-- Slack, Discord and signed webhook alerts, with retries, quiet hours and escalation delays.
+- Slack, Discord, email and signed webhook alerts, with retries, quiet hours and escalation
+  delays.
+- Status page subscriptions by email or webhook, with double opt-in, branded emails sent from
+  the page's own domain, and per-component choices; see [Email and subscriptions](#email-and-subscriptions).
 - TLS certificate-expiry warnings and one-off or recurring maintenance windows.
 - A live admin console with GitHub sign-in, tags, groups, search, bulk actions and "Test now".
   Status pages and the console update over SSE when checks finish.
@@ -157,6 +160,63 @@ bulk actions, uptime corrections (with their reason), configuration exports and 
 Changed fields are listed with their old and new values; credentials are shown as `***`, so a
 changed password is visible as changed but never stored. Browse and filter it under **Audit**
 in the console. The trail is kept forever (retention only prunes check history).
+
+### Email and subscriptions
+
+Email goes through [Lettermint](https://lettermint.co) and is **off** unless a project token is
+set; without it the console says so, email channels cannot be chosen, and status pages offer
+no subscriptions.
+
+| Variable | |
+|---|---|
+| `UPTIMESTATUS_EMAIL__LETTERMINT_PROJECT_TOKEN` | Project (sending) token, `lm_…`; turns email on |
+| `UPTIMESTATUS_EMAIL__DEFAULT_FROM` | Sender for alerts and for pages without a verified domain, e.g. `uptimestatus <alerts@example.com>` (required with a token; its domain must be verified at Lettermint) |
+| `UPTIMESTATUS_EMAIL__LETTERMINT_TEAM_TOKEN` | Optional team token (`read:domains`, `write:domains`) so the console can register and verify pages' sending domains |
+| `UPTIMESTATUS_EMAIL__WEBHOOK_SECRET` | Optional signing secret of a Lettermint webhook pointed at `<APP_URL>/webhooks/lettermint` (bounces, complaints, unsubscribes) |
+
+- **Email alert channels** send to up to 10 addresses from the default sender, with the
+  same routing (escalation, quiet hours, muted events) as other channels.
+- **Each status page** has an **Email** page in the console: whether visitors may subscribe,
+  whether automatic incidents are announced (or only declared ones), and its sender name,
+  address and Reply-To. With a team token, **Set up sending domain** registers the sender's
+  domain at Lettermint and lists its DNS records (DKIM CNAMEs, Return-Path, DMARC) to publish,
+  then **Verify**. Without one, add the domain in the Lettermint dashboard and **Send test**:
+  once a test is accepted from the page's sender, the page sends from it. Until its domain is
+  verified, a page's email comes from the default sender under the page's name, with the
+  page's address as Reply-To.
+- **Visitors subscribe** from the page footer (`/s/{slug}/subscribe`, also on custom domains)
+  by email, or with a webhook confirmed by email, for every component or a chosen few. They
+  confirm by email first (nothing else is sent until then), manage their components or leave
+  from links in every email, and mail clients can unsubscribe in one click
+  (`List-Unsubscribe-Post`). Requests are rate-limited, a hidden field catches simple bots,
+  and the page never tells whether an address is already subscribed.
+- **Subscribers hear about** incidents when declared, updated and resolved (automatic ones too,
+  unless the page opts out; incidents declared as already resolved are not announced),
+  maintenance when scheduled, starting and completed, and manual component statuses and
+  overrides (clearing an override is not announced). Emails carry the page's title, logo,
+  accent and look, link to its custom domain when it has one, and have a plain-text version.
+- **Webhook subscribers** receive `POST`s with `X-Uptimestatus-Event`, `X-Uptimestatus-Timestamp`
+  and `X-Uptimestatus-Signature: sha256=HMAC-SHA256(secret, "{timestamp}.{body}")` (hex). The
+  signing secret is shown once after confirming (and can be replaced from the manage link).
+  Bodies look like:
+
+  ```json
+  {"id": "42", "type": "incident.created", "created_at": "2026-10-15T09:00:00Z",
+   "page": {"slug": "acme", "title": "Acme Status", "url": "https://status.acme.com/"},
+   "data": {"id": 7, "title": "API errors", "status": "investigating", "impact": "major",
+            "message": "…", "started_at": "…", "resolved_at": null, "at": "…",
+            "monitors": ["api"], "components": ["Public API"]}}
+  ```
+
+  `type` is one of `incident.created`, `incident.updated`, `incident.resolved`,
+  `maintenance.scheduled`, `maintenance.started`, `maintenance.completed` and
+  `component.status_changed`. Endpoints must be public `https://` URLs (private addresses are
+  refused when sending). Deliveries are retried with backoff; a webhook that fails ten times in
+  a row over at least a day is disabled and its owner is emailed.
+- **Subscribers** are listed (masked) under each page's **Subscribers**, where admins can stop
+  or remove them and export a CSV; all of this is audited. Addresses and webhook URLs are
+  encrypted at rest and found through blind indexes. Bounces, complaints and suppressions
+  reported by Lettermint's webhook stop all email to that address.
 
 ## Databases
 

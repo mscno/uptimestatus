@@ -38,7 +38,7 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 /// The visitor's address as a reverse proxy reports it: the first
 /// `X-Forwarded-For` entry, else `X-Real-IP`. Logging only: the headers are
 /// client-controlled unless a trusted proxy overwrites them.
-fn client_ip(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn client_ip(headers: &HeaderMap) -> Option<String> {
     let forwarded = header(headers, "x-forwarded-for")
         .and_then(|value| value.split(',').next())
         .map(str::trim)

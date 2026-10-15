@@ -43,6 +43,68 @@ pub struct Config {
     pub storage: StorageConfig,
     #[serde(default)]
     pub secrets: SecretsConfig,
+    #[serde(default)]
+    pub email: EmailConfig,
+}
+
+/// Email through Lettermint: alert channels, status page subscriptions and
+/// per-page sending domains. Disabled unless the project token is set.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EmailConfig {
+    /// Project (sending) token, `lm_…`.
+    pub lettermint_project_token: Option<Secret>,
+    /// Team token (`lm_team_…`, abilities `read:domains` and `write:domains`)
+    /// to register pages' sending domains; optional.
+    pub lettermint_team_token: Option<Secret>,
+    /// Sender for alerts and pages without a verified domain of their own,
+    /// e.g. `uptimestatus <alerts@example.com>`. Required with a token.
+    pub default_from: Option<String>,
+    /// Lettermint API base URL (tests).
+    pub api_url: Option<String>,
+    /// Signing secret of the Lettermint webhook for bounces and complaints.
+    pub webhook_secret: Option<Secret>,
+}
+
+impl EmailConfig {
+    /// Whether email is configured.
+    pub fn enabled(&self) -> bool {
+        self.lettermint_project_token
+            .as_ref()
+            .is_some_and(|t| !t.expose().trim().is_empty())
+    }
+
+    /// The mailer, when email is configured.
+    pub fn mailer(&self) -> anyhow::Result<Option<uptime_notify::Mailer>> {
+        if !self.enabled() {
+            return Ok(None);
+        }
+        let from = self
+            .default_from
+            .as_deref()
+            .map(str::trim)
+            .filter(|f| !f.is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "email.default_from is required when email.lettermint_project_token is set"
+                )
+            })?
+            .parse()
+            .map_err(|e| anyhow::anyhow!("email.default_from: {e}"))?;
+        let token = |secret: &Option<Secret>| {
+            secret
+                .as_ref()
+                .map(|s| s.expose().trim().to_owned())
+                .filter(|s| !s.is_empty())
+        };
+        let mailer = uptime_notify::Mailer::new(uptime_notify::MailerConfig {
+            project_token: token(&self.lettermint_project_token).unwrap_or_default(),
+            team_token: token(&self.lettermint_team_token),
+            default_from: from,
+            api_url: self.api_url.clone(),
+        })?;
+        Ok(Some(mailer))
+    }
 }
 
 /// Keys that encrypt secrets at rest (see `uptime_store::secrets`).
@@ -406,6 +468,45 @@ mod tests {
                 error.contains("database_url") || error.contains("edge_host"),
                 "{error}"
             );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn email_is_off_until_a_lettermint_token_is_set() {
+        Jail::expect_with(|jail| {
+            jail.clear_env();
+            required_env(jail);
+            let config = Config::load().unwrap();
+            assert!(!config.email.enabled());
+            assert!(config.email.mailer().unwrap().is_none());
+
+            jail.set_env(
+                "UPTIMESTATUS_EMAIL__LETTERMINT_PROJECT_TOKEN",
+                "lm_project_test",
+            );
+            let config = Config::load().unwrap();
+            assert!(config.email.enabled());
+            let error = config.email.mailer().unwrap_err().to_string();
+            assert!(error.contains("email.default_from"), "{error}");
+
+            jail.set_env(
+                "UPTIMESTATUS_EMAIL__DEFAULT_FROM",
+                "Status <alerts@example.com>",
+            );
+            jail.set_env("UPTIMESTATUS_EMAIL__LETTERMINT_TEAM_TOKEN", "lm_team_test");
+            jail.set_env("UPTIMESTATUS_EMAIL__WEBHOOK_SECRET", "whsec_x");
+            let config = Config::load().unwrap();
+            let mailer = config.email.mailer().unwrap().unwrap();
+            assert_eq!(
+                mailer.default_from().to_string(),
+                "\"Status\" <alerts@example.com>"
+            );
+            assert!(mailer.manages_domains());
+            let debug = format!("{:?}", config.email);
+            for secret in ["lm_project_test", "lm_team_test", "whsec_x"] {
+                assert!(!debug.contains(secret), "{debug}");
+            }
             Ok(())
         });
     }

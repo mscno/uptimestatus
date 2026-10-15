@@ -3,7 +3,7 @@
 use jiff::Timestamp;
 use topcoat::{
     Result,
-    view::{View, component, view},
+    view::{View, ViewExt as _, component, view},
 };
 use uptime_domain::{CheckSpec, MonitorState};
 use uptime_store::MonitorOverview;
@@ -18,6 +18,32 @@ pub(crate) fn target(check: &CheckSpec) -> String {
         CheckSpec::Tcp(tcp) => format!("{}:{}", tcp.host, tcp.port),
         CheckSpec::Dns(dns) => format!("{} {}", dns.record_type, dns.name),
         CheckSpec::Push(_) => "push heartbeat".to_owned(),
+        CheckSpec::Ping(ping) => format!("ping {}", ping.host),
+        CheckSpec::Database(db) => db.display_target(),
+        CheckSpec::Grpc(grpc) => {
+            let endpoint = format!(
+                "grpc{}://{}:{}",
+                if grpc.tls() { "s" } else { "" },
+                grpc.url.host_str().unwrap_or_default(),
+                grpc.port()
+            );
+            match &grpc.service {
+                Some(service) => format!("{endpoint} {service}"),
+                None => endpoint,
+            }
+        }
+        CheckSpec::Mqtt(mqtt) => {
+            let broker = format!(
+                "mqtt{}://{}:{}",
+                if mqtt.tls { "s" } else { "" },
+                mqtt.host,
+                mqtt.port()
+            );
+            match &mqtt.topic {
+                Some(topic) => format!("{broker} {topic}"),
+                None => broker,
+            }
+        }
     }
 }
 
@@ -183,6 +209,72 @@ pub(crate) async fn checkbox(name: &str, label: &str, checked: bool) -> Result<i
     })
 }
 
+/// Fields of the ping, database, gRPC and MQTT checks. Boxed: inline, they
+/// would make the form's view too large for a thread's stack.
+#[component]
+async fn protocol_check_fields(form: &MonitorForm, errors: &FormErrors) -> Result<impl View> {
+    Ok(view! {
+        <div data-show="$check_type == 'ping'">
+            <div class="fields">
+                text_field(name: "ping_host", label: "Host", value: &form.ping_host, errors: errors, placeholder: "example.com")
+                text_field(name: "ping_count", label: "Packets", value: &form.ping_count, errors: errors,
+                    hint: "Echo requests per check, 1-10.")
+            </div>
+            <div class="fields">
+                text_field(name: "ping_packet_timeout", label: "Packet timeout", value: &form.ping_packet_timeout, errors: errors,
+                    hint: "How long to wait for each reply, e.g. 1s.")
+                text_field(name: "ping_loss_threshold", label: "Down at packet loss (%)", value: &form.ping_loss_threshold, errors: errors,
+                    hint: "100 means down only when every packet is lost.")
+            </div>
+        </div>
+        <div data-show="$check_type == 'database'">
+            text_field(name: "db_url", label: "Connection URL", value: &form.db_url, errors: errors,
+                placeholder: "postgres://monitor:secret@db.example.com:5432/app?sslmode=require",
+                hint: "postgres://, mysql:// or redis:// (rediss:// for TLS). Use a read-only account; the URL is stored as a secret.")
+            <div class="fields">
+                text_field(name: "db_query", label: "Query", value: &form.db_query, errors: errors,
+                    placeholder: "SELECT 1", hint: "Optional; blank runs SELECT 1 (PING for Redis).")
+                text_field(name: "db_expect", label: "Expected value", value: &form.db_expect, errors: errors,
+                    hint: "Optional text the first value of the result must contain.")
+            </div>
+            checkbox(name: "db_ignore_tls_errors", label: "Ignore TLS certificate errors", checked: form.db_ignore_tls_errors.is_some())
+        </div>
+        <div data-show="$check_type == 'grpc'">
+            <div class="fields">
+                text_field(name: "grpc_url", label: "Server", value: &form.grpc_url, errors: errors,
+                    placeholder: "https://api.example.com:443", hint: "http:// for plaintext HTTP/2, https:// for TLS.")
+                text_field(name: "grpc_service", label: "Service", value: &form.grpc_service, errors: errors,
+                    placeholder: "api.v1.Users", hint: "Optional; blank asks about the whole server.")
+            </div>
+            text_area(name: "grpc_metadata", label: "Metadata", value: &form.grpc_metadata, errors: errors,
+                hint: "Optional, one per line: name: value (e.g. authorization: Bearer …).")
+            checkbox(name: "grpc_ignore_tls_errors", label: "Ignore TLS certificate errors", checked: form.grpc_ignore_tls_errors.is_some())
+        </div>
+        <div data-show="$check_type == 'mqtt'">
+            <div class="fields">
+                text_field(name: "mqtt_host", label: "Broker host", value: &form.mqtt_host, errors: errors, placeholder: "broker.example.com")
+                text_field(name: "mqtt_port", label: "Port", value: &form.mqtt_port, errors: errors,
+                    hint: "Blank uses 1883, or 8883 with TLS.")
+            </div>
+            <div class="fields">
+                text_field(name: "mqtt_username", label: "Username", value: &form.mqtt_username, errors: errors)
+                text_field(name: "mqtt_password", label: "Password", value: &form.mqtt_password, errors: errors)
+            </div>
+            <div class="fields">
+                text_field(name: "mqtt_topic", label: "Topic", value: &form.mqtt_topic, errors: errors,
+                    placeholder: "devices/gateway/health", hint: "Optional: subscribe and wait for a message (retained ones arrive at once).")
+                text_field(name: "mqtt_expect", label: "Expected payload", value: &form.mqtt_expect, errors: errors,
+                    hint: "Optional text the message must contain.")
+            </div>
+            text_field(name: "mqtt_client_id", label: "Client id prefix", value: &form.mqtt_client_id, errors: errors,
+                placeholder: "uptimestatus", hint: "Optional; a random suffix is added.")
+            checkbox(name: "mqtt_tls", label: "Connect with TLS", checked: form.mqtt_tls.is_some())
+            checkbox(name: "mqtt_ignore_tls_errors", label: "Ignore TLS certificate errors", checked: form.mqtt_ignore_tls_errors.is_some())
+        </div>
+    }
+    .boxed())
+}
+
 /// The create/edit form. `action` is where it posts.
 #[component]
 pub(crate) async fn monitor_form(
@@ -192,10 +284,9 @@ pub(crate) async fn monitor_form(
     cancel: &str,
     #[default] channels: &[uptime_store::Channel],
 ) -> Result<impl View> {
-    let check_type = if form.check_type == "tcp" {
-        "tcp"
-    } else {
-        "http"
+    let check_type = match form.check_type.as_str() {
+        kind @ ("tcp" | "dns" | "push" | "ping" | "database" | "grpc" | "mqtt") => kind,
+        _ => "http",
     };
     let methods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
     let channel_toggles: Vec<(String, String, bool)> = channels
@@ -241,8 +332,13 @@ pub(crate) async fn monitor_form(
                         <option value="tcp" selected=(check_type == "tcp")>"TCP port"</option>
                         <option value="dns" selected=(check_type == "dns")>"DNS lookup"</option>
                         <option value="push" selected=(check_type == "push")>"Push (heartbeat from the service)"</option>
+                        <option value="ping" selected=(check_type == "ping")>"Ping (ICMP)"</option>
+                        <option value="database" selected=(check_type == "database")>"Database (PostgreSQL, MySQL, Redis)"</option>
+                        <option value="grpc" selected=(check_type == "grpc")>"gRPC health"</option>
+                        <option value="mqtt" selected=(check_type == "mqtt")>"MQTT broker"</option>
                     </select>
                 </div>
+                protocol_check_fields(form: form, errors: errors)
                 <div data-show="$check_type == 'dns'">
                     <div class="fields">
                         text_field(name: "dns_name", label: "Name", value: &form.dns_name, errors: errors, placeholder: "example.com")
@@ -379,5 +475,6 @@ pub(crate) async fn monitor_form(
             </div>
             <div id="test-result" class="stack"></div>
         </form>
-    })
+    }
+    .boxed())
 }

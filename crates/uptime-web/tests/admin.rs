@@ -718,3 +718,43 @@ async fn bulk_actions_explain_what_is_missing_and_need_sign_in() {
     assert_ne!(stranger.status, StatusCode::OK);
     assert_eq!(app.db.store().list_monitors().await.unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn protocol_checks_are_created_from_the_monitor_form_and_shown_safely() {
+    let app = TestApp::new().await;
+    let mut client = app.signed_in("alice", 1001).await;
+    let mut pairs = form("orders-db", "");
+    pairs.retain(|(name, _)| *name != "check_type" && *name != "url");
+    pairs.extend([
+        ("check_type", "database".to_owned()),
+        (
+            "db_url",
+            "postgres://monitor:form-s3cr3t@db.example.com/orders?sslmode=require".to_owned(),
+        ),
+        ("db_query", "SELECT 1".to_owned()),
+    ]);
+
+    let reply = client.post_form("/admin/monitors", &fields(&pairs)).await;
+    assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
+    let location = reply.location().unwrap().to_owned();
+    let detail = client.get(&location).await;
+    detail
+        .assert_contains("PostgreSQL postgres://db.example.com:5432")
+        .assert_contains("SELECT 1");
+    assert!(!detail.body.contains("form-s3cr3t"), "{}", detail.body);
+    let list = client.get("/admin").await;
+    list.assert_contains("postgres://db.example.com:5432");
+    assert!(!list.body.contains("form-s3cr3t"));
+
+    // Editing shows the database fields, with the type selected.
+    let edit = client.get(&format!("{location}/edit")).await;
+    edit.assert_contains(r#"<option value="database" selected"#)
+        .assert_contains("data-signals:check_type=\"'database'\"");
+
+    // Mistakes are explained on the right field.
+    pairs.retain(|(name, _)| *name != "db_url");
+    pairs.push(("db_url", "mongodb://db.example.com".to_owned()));
+    let bad = client.post_form("/admin/monitors", &fields(&pairs)).await;
+    assert_eq!(bad.status, StatusCode::UNPROCESSABLE_ENTITY);
+    bad.assert_contains("postgres://, mysql:// or redis://");
+}

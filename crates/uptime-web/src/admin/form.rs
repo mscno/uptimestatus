@@ -7,9 +7,9 @@ use std::{collections::BTreeMap, fmt, time::Duration};
 
 use serde::Deserialize;
 use uptime_domain::{
-    CheckPolicy, CheckSpec, DnsCheck, DnsRecordType, HttpAuth, HttpCheck, HttpMethod, JsonRule,
-    KeywordRule, MonitorKey, MonitorSpec, PolicyError, PushCheck, StatusRanges, TcpCheck,
-    normalize_group, normalize_tags,
+    CheckError, CheckPolicy, CheckSpec, DatabaseCheck, DnsCheck, DnsRecordType, GrpcCheck,
+    HttpAuth, HttpCheck, HttpMethod, JsonRule, KeywordRule, MonitorKey, MonitorSpec, MqttCheck,
+    PingCheck, PolicyError, PushCheck, StatusRanges, TcpCheck, normalize_group, normalize_tags,
 };
 use url::Url;
 
@@ -76,6 +76,27 @@ pub struct MonitorForm {
     pub resolver: String,
     pub expect: String,
     pub push_token: String,
+    pub ping_host: String,
+    pub ping_count: String,
+    pub ping_packet_timeout: String,
+    pub ping_loss_threshold: String,
+    pub db_url: String,
+    pub db_query: String,
+    pub db_expect: String,
+    pub db_ignore_tls_errors: Option<String>,
+    pub grpc_url: String,
+    pub grpc_service: String,
+    pub grpc_metadata: String,
+    pub grpc_ignore_tls_errors: Option<String>,
+    pub mqtt_host: String,
+    pub mqtt_port: String,
+    pub mqtt_tls: Option<String>,
+    pub mqtt_ignore_tls_errors: Option<String>,
+    pub mqtt_username: String,
+    pub mqtt_password: String,
+    pub mqtt_client_id: String,
+    pub mqtt_topic: String,
+    pub mqtt_expect: String,
     pub interval: String,
     pub retry_interval: String,
     pub timeout: String,
@@ -146,6 +167,9 @@ impl MonitorForm {
             max_redirects: "10".into(),
             cert_warn_days: "14".into(),
             tcp_cert_warn_days: "14".into(),
+            ping_count: "3".into(),
+            ping_packet_timeout: "1s".into(),
+            ping_loss_threshold: "100".into(),
             interval: exact(policy.interval),
             retry_interval: exact(policy.retry_interval),
             timeout: exact(policy.timeout),
@@ -232,6 +256,44 @@ impl MonitorForm {
                 form.check_type = "push".into();
                 form.push_token = push.token.clone();
             }
+            CheckSpec::Ping(ping) => {
+                form.check_type = "ping".into();
+                form.ping_host = ping.host.clone();
+                form.ping_count = ping.count.to_string();
+                form.ping_packet_timeout = exact(ping.packet_timeout);
+                form.ping_loss_threshold = ping.loss_threshold_percent.to_string();
+            }
+            CheckSpec::Database(db) => {
+                form.check_type = "database".into();
+                form.db_url = db.url.clone();
+                form.db_query = db.query.clone().unwrap_or_default();
+                form.db_expect = db.expect.clone().unwrap_or_default();
+                form.db_ignore_tls_errors = flag(db.ignore_tls_errors);
+            }
+            CheckSpec::Grpc(grpc) => {
+                form.check_type = "grpc".into();
+                form.grpc_url = grpc.url.to_string();
+                form.grpc_service = grpc.service.clone().unwrap_or_default();
+                form.grpc_metadata = grpc
+                    .metadata
+                    .iter()
+                    .map(|(n, v)| format!("{n}: {v}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                form.grpc_ignore_tls_errors = flag(grpc.ignore_tls_errors);
+            }
+            CheckSpec::Mqtt(mqtt) => {
+                form.check_type = "mqtt".into();
+                form.mqtt_host = mqtt.host.clone();
+                form.mqtt_port = mqtt.port.map(|p| p.to_string()).unwrap_or_default();
+                form.mqtt_tls = flag(mqtt.tls);
+                form.mqtt_ignore_tls_errors = flag(mqtt.ignore_tls_errors);
+                form.mqtt_username = mqtt.username.clone().unwrap_or_default();
+                form.mqtt_password = mqtt.password.clone().unwrap_or_default();
+                form.mqtt_client_id = mqtt.client_id.clone().unwrap_or_default();
+                form.mqtt_topic = mqtt.topic.clone().unwrap_or_default();
+                form.mqtt_expect = mqtt.expect.clone().unwrap_or_default();
+            }
         }
         form
     }
@@ -266,11 +328,23 @@ impl MonitorForm {
                     .filter(|t| t.len() >= 16 && t.chars().all(|c| c.is_ascii_alphanumeric()))
                     .unwrap_or_else(new_push_token),
             })),
+            "ping" => self.ping_check(&mut errors).map(CheckSpec::Ping),
+            "database" => Some(CheckSpec::Database(self.database_check())),
+            "grpc" => self.grpc_check(&mut errors).map(CheckSpec::Grpc),
+            "mqtt" => self.mqtt_check(&mut errors).map(CheckSpec::Mqtt),
             _ => {
-                errors.insert("check_type", "Choose HTTP, TCP, DNS or push.");
+                errors.insert(
+                    "check_type",
+                    "Choose HTTP, TCP, DNS, push, ping, database, gRPC or MQTT.",
+                );
                 None
             }
         };
+        if let Some(check) = &check
+            && let Err(error) = check.validate()
+        {
+            errors.insert(check_field(check, &error), sentence(&error));
+        }
 
         let interval = required_duration(&mut errors, "interval", &self.interval);
         let retry_interval = match blank(&self.retry_interval) {
@@ -523,6 +597,125 @@ impl MonitorForm {
             resolver: resolver?,
             expect: blank(&self.expect).map(str::to_owned),
         })
+    }
+}
+
+impl MonitorForm {
+    fn ping_check(&self, errors: &mut FormErrors) -> Option<PingCheck> {
+        let defaults = PingCheck::host("");
+        let packets = count(
+            errors,
+            "ping_count",
+            &self.ping_count,
+            defaults.count.into(),
+            PingCheck::MAX_COUNT.into(),
+        )
+        .and_then(|n| u8::try_from(n).ok());
+        let packet_timeout = match blank(&self.ping_packet_timeout) {
+            None => Some(defaults.packet_timeout),
+            Some(text) => duration(errors, "ping_packet_timeout", text),
+        };
+        let loss = count(
+            errors,
+            "ping_loss_threshold",
+            &self.ping_loss_threshold,
+            defaults.loss_threshold_percent.into(),
+            100,
+        )
+        .and_then(|n| u8::try_from(n).ok());
+        Some(PingCheck {
+            host: self.ping_host.trim().to_owned(),
+            count: packets?,
+            packet_timeout: packet_timeout?,
+            loss_threshold_percent: loss?,
+        })
+    }
+
+    fn database_check(&self) -> DatabaseCheck {
+        DatabaseCheck {
+            url: self.db_url.trim().to_owned(),
+            query: blank(&self.db_query).map(str::to_owned),
+            expect: (!self.db_expect.is_empty()).then(|| self.db_expect.clone()),
+            ignore_tls_errors: self.db_ignore_tls_errors.is_some(),
+        }
+    }
+
+    fn grpc_check(&self, errors: &mut FormErrors) -> Option<GrpcCheck> {
+        let url = match self.grpc_url.trim().parse::<Url>() {
+            Ok(url) => Some(url),
+            Err(_) => {
+                errors.insert(
+                    "grpc_url",
+                    "Enter an http:// or https:// URL, e.g. https://api.example.com:443.",
+                );
+                None
+            }
+        };
+        let metadata = self
+            .grpc_metadata
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                let (name, value) = line.split_once(':')?;
+                Some((name.trim().to_ascii_lowercase(), value.trim().to_owned()))
+            })
+            .collect::<Option<Vec<_>>>();
+        if metadata.is_none() {
+            errors.insert(
+                "grpc_metadata",
+                "Write one entry per line, like `authorization: Bearer …`.",
+            );
+        }
+        Some(GrpcCheck {
+            url: url?,
+            service: blank(&self.grpc_service).map(str::to_owned),
+            metadata: metadata?,
+            ignore_tls_errors: self.grpc_ignore_tls_errors.is_some(),
+        })
+    }
+
+    fn mqtt_check(&self, errors: &mut FormErrors) -> Option<MqttCheck> {
+        let port = match blank(&self.mqtt_port) {
+            None => Some(None),
+            Some(text) => match text.parse::<u16>() {
+                Ok(port) if port > 0 => Some(Some(port)),
+                _ => {
+                    errors.insert(
+                        "mqtt_port",
+                        "Enter a port between 1 and 65535, or leave blank.",
+                    );
+                    None
+                }
+            },
+        };
+        Some(MqttCheck {
+            host: self.mqtt_host.trim().to_owned(),
+            port: port?,
+            tls: self.mqtt_tls.is_some(),
+            ignore_tls_errors: self.mqtt_ignore_tls_errors.is_some(),
+            username: blank(&self.mqtt_username).map(str::to_owned),
+            password: (!self.mqtt_password.is_empty()).then(|| self.mqtt_password.clone()),
+            client_id: blank(&self.mqtt_client_id).map(str::to_owned),
+            topic: blank(&self.mqtt_topic).map(str::to_owned),
+            expect: (!self.mqtt_expect.is_empty()).then(|| self.mqtt_expect.clone()),
+        })
+    }
+}
+
+/// The form field a check rule belongs to.
+fn check_field(check: &CheckSpec, error: &CheckError) -> &'static str {
+    match (check, error) {
+        (CheckSpec::Ping(_), CheckError::Host) => "ping_host",
+        (_, CheckError::PingCount) => "ping_count",
+        (_, CheckError::PacketTimeout) => "ping_packet_timeout",
+        (_, CheckError::LossThreshold) => "ping_loss_threshold",
+        (_, CheckError::DatabaseUrl) => "db_url",
+        (_, CheckError::GrpcUrl) => "grpc_url",
+        (_, CheckError::Metadata) => "grpc_metadata",
+        (_, CheckError::Port) => "mqtt_port",
+        (_, CheckError::ExpectWithoutTopic | CheckError::Topic) => "mqtt_topic",
+        (_, CheckError::Host) => "mqtt_host",
     }
 }
 
@@ -946,7 +1139,7 @@ mod tests {
     #[test]
     fn unknown_check_types_are_rejected() {
         let form = MonitorForm {
-            check_type: "ping".into(),
+            check_type: "icmp".into(),
             ..http_form()
         };
         assert_eq!(errors(&form), ["check_type"]);
@@ -1021,6 +1214,150 @@ mod tests {
         assert_eq!(spec.policy.timeout, Duration::from_secs(10));
         assert_eq!((spec.policy.retries, spec.policy.resend_every), (1, 0));
         assert!(!spec.active, "missing checkbox means unticked");
+    }
+
+    #[test]
+    fn protocol_checks_round_trip_through_the_form() {
+        let forms = [
+            MonitorForm {
+                check_type: "ping".into(),
+                ping_host: "example.com".into(),
+                ping_count: "5".into(),
+                ping_packet_timeout: "500ms".into(),
+                ping_loss_threshold: "60".into(),
+                ..http_form()
+            },
+            MonitorForm {
+                check_type: "database".into(),
+                db_url: "postgres://monitor:pw@db.example.com/app?sslmode=require".into(),
+                db_query: "SELECT count(*) FROM jobs".into(),
+                db_expect: "0".into(),
+                db_ignore_tls_errors: flag(true),
+                ..http_form()
+            },
+            MonitorForm {
+                check_type: "grpc".into(),
+                grpc_url: "https://grpc.example.com:8443".into(),
+                grpc_service: "api.v1.Users".into(),
+                grpc_metadata: "Authorization: Bearer t0ken\nx-tenant: acme".into(),
+                ..http_form()
+            },
+            MonitorForm {
+                check_type: "mqtt".into(),
+                mqtt_host: "broker.example.com".into(),
+                mqtt_tls: flag(true),
+                mqtt_username: "probe".into(),
+                mqtt_password: "pw".into(),
+                mqtt_topic: "devices/+/health".into(),
+                mqtt_expect: "ok".into(),
+                ..http_form()
+            },
+        ];
+        for form in forms {
+            let spec = form
+                .to_spec()
+                .unwrap_or_else(|e| panic!("{}: {e:?}", form.check_type));
+            assert_eq!(spec.check.kind(), form.check_type);
+            assert_eq!(MonitorForm::from_spec(&spec).to_spec().unwrap(), spec);
+        }
+        let ping = MonitorForm {
+            check_type: "ping".into(),
+            ping_host: "example.com".into(),
+            ..http_form()
+        }
+        .to_spec()
+        .unwrap();
+        assert_eq!(
+            ping.check,
+            CheckSpec::Ping(PingCheck::host("example.com")),
+            "blank fields take the defaults"
+        );
+        let CheckSpec::Grpc(grpc) = MonitorForm {
+            check_type: "grpc".into(),
+            grpc_url: "http://h:50051".into(),
+            grpc_metadata: "Authorization: Bearer t0ken".into(),
+            ..http_form()
+        }
+        .to_spec()
+        .unwrap()
+        .check
+        else {
+            panic!("grpc")
+        };
+        assert_eq!(
+            grpc.metadata,
+            [("authorization".to_owned(), "Bearer t0ken".to_owned())],
+            "gRPC metadata names are lowercase"
+        );
+    }
+
+    #[test]
+    fn protocol_check_mistakes_point_at_their_fields() {
+        let cases = [
+            (
+                MonitorForm {
+                    check_type: "ping".into(),
+                    ping_host: "https://example.com".into(),
+                    ..http_form()
+                },
+                "ping_host",
+            ),
+            (
+                MonitorForm {
+                    check_type: "ping".into(),
+                    ping_host: "example.com".into(),
+                    ping_count: "50".into(),
+                    ..http_form()
+                },
+                "ping_count",
+            ),
+            (
+                MonitorForm {
+                    check_type: "database".into(),
+                    db_url: "mongodb://db".into(),
+                    ..http_form()
+                },
+                "db_url",
+            ),
+            (
+                MonitorForm {
+                    check_type: "grpc".into(),
+                    grpc_url: "https://h/path".into(),
+                    ..http_form()
+                },
+                "grpc_url",
+            ),
+            (
+                MonitorForm {
+                    check_type: "grpc".into(),
+                    grpc_url: "https://h".into(),
+                    grpc_metadata: "no colon".into(),
+                    ..http_form()
+                },
+                "grpc_metadata",
+            ),
+            (
+                MonitorForm {
+                    check_type: "mqtt".into(),
+                    mqtt_host: "broker".into(),
+                    mqtt_expect: "ok".into(),
+                    ..http_form()
+                },
+                "mqtt_topic",
+            ),
+            (
+                MonitorForm {
+                    check_type: "mqtt".into(),
+                    mqtt_host: "broker".into(),
+                    mqtt_port: "99999".into(),
+                    ..http_form()
+                },
+                "mqtt_port",
+            ),
+        ];
+        for (form, field) in cases {
+            assert_eq!(errors(&form), [field], "{}", form.check_type);
+        }
     }
 
     #[test]

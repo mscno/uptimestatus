@@ -192,6 +192,96 @@ async fn bad_bodies_are_explained() {
 }
 
 #[tokio::test]
+async fn protocol_check_secrets_are_redacted_for_read_tokens() {
+    let app = TestApp::new().await;
+    let read = token(&app, TokenScope::Read).await;
+    let write = token(&app, TokenScope::Write).await;
+    let mut client = app.client();
+    for (key, check) in [
+        (
+            "db",
+            json!({
+                "type": "database",
+                "url": "postgres://db-user:db-password@db.example.com:5433/app-name?sslmode=require",
+                "query": "SELECT query_secret()",
+                "expect": "db-expect-secret"
+            }),
+        ),
+        (
+            "grpc",
+            json!({
+                "type": "grpc",
+                "url": "https://grpc.example.com",
+                "metadata": [["authorization", "Bearer grpc-secret"]]
+            }),
+        ),
+        (
+            "mqtt",
+            json!({
+                "type": "mqtt",
+                "host": "broker.example.com",
+                "username": "mqtt-user",
+                "password": "mqtt-password",
+                "topic": "health",
+                "expect": "mqtt-expect-secret"
+            }),
+        ),
+        ("ping", json!({"type": "ping", "host": "example.com"})),
+    ] {
+        let created = client
+            .api(
+                "PUT",
+                &format!("/api/v1/monitors/{key}"),
+                Some(&write),
+                Some(json!({"name": key, "check": check})),
+            )
+            .await;
+        assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    }
+
+    let as_read = client.api("GET", "/api/v1/config", Some(&read), None).await;
+    for secret in [
+        "db-user",
+        "db-password",
+        "app-name",
+        "query_secret",
+        "db-expect-secret",
+        "grpc-secret",
+        "mqtt-user",
+        "mqtt-password",
+        "mqtt-expect-secret",
+    ] {
+        assert!(
+            !as_read.body.contains(secret),
+            "leaked {secret}: {}",
+            as_read.body
+        );
+    }
+    assert!(
+        as_read.body.contains("postgres://db.example.com:5433"),
+        "read tokens still see where a database is: {}",
+        as_read.body
+    );
+    let as_write = client
+        .api("GET", "/api/v1/config", Some(&write), None)
+        .await;
+    for secret in ["db-password", "grpc-secret", "mqtt-password"] {
+        assert!(as_write.body.contains(secret));
+    }
+
+    let invalid = client
+        .api(
+            "PUT",
+            "/api/v1/monitors/bad",
+            Some(&write),
+            Some(json!({"name": "Bad", "check": {"type": "ping", "host": "h", "count": 0}})),
+        )
+        .await;
+    assert_eq!(invalid.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(invalid.body.contains("packets"), "{}", invalid.body);
+}
+
+#[tokio::test]
 async fn read_tokens_see_secrets_redacted_and_write_tokens_do_not() {
     let app = TestApp::new().await;
     let read = token(&app, TokenScope::Read).await;

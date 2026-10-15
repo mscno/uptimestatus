@@ -171,6 +171,33 @@ async fn seed_command_creates_monitors_from_a_file() {
 }
 
 #[tokio::test]
+async fn seed_rejects_unworkable_checks_before_creating_anything() {
+    let db = TestDb::new().await;
+    let path = std::env::temp_dir().join(format!(
+        "uptimestatus-seed-invalid-{}.toml",
+        std::process::id()
+    ));
+    std::fs::write(
+        &path,
+        "[[monitor]]\nkey = \"edge\"\nname = \"Edge\"\ncheck = { type = \"ping\", host = \"edge.example.com\" }\n\n\
+         [[monitor]]\nkey = \"docs\"\nname = \"Docs\"\ncheck = { type = \"database\", url = \"mongodb://docs.example.com\" }\n",
+    )
+    .unwrap();
+
+    let error = uptime_server::run(
+        Command::Seed { path: path.clone() },
+        config(&db),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(format!("{error:#}").contains("monitor `docs`"), "{error:#}");
+    assert!(db.store().list_monitors().await.unwrap().is_empty());
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
 async fn roles_split_checking_from_serving() {
     use uptime_domain::{CheckPolicy, CheckSpec, MonitorSpec, TcpCheck};
 

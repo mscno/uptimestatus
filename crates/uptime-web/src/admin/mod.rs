@@ -609,6 +609,76 @@ pub(crate) async fn monitor_detail(cx: &Cx) -> Result<impl View> {
             ),
             ("Expect", dns.expect.clone().unwrap_or_else(|| "—".into())),
         ],
+        CheckSpec::Ping(ping) => vec![
+            ("Host", ping.host.clone()),
+            (
+                "Packets",
+                format!(
+                    "{} per check, {} timeout each",
+                    ping.count,
+                    fmt::duration(ping.packet_timeout)
+                ),
+            ),
+            (
+                "Down at",
+                format!("{}% packet loss", ping.loss_threshold_percent),
+            ),
+        ],
+        CheckSpec::Database(db) => vec![
+            (
+                "Database",
+                format!(
+                    "{} {}",
+                    db.engine().map_or("Unknown", |e| e.label()),
+                    db.display_target()
+                ),
+            ),
+            ("Query", db.query_text().unwrap_or_default()),
+            ("Expect", db.expect.clone().unwrap_or_else(|| "—".into())),
+        ],
+        CheckSpec::Grpc(grpc) => vec![
+            ("Server", grpc.url.to_string()),
+            (
+                "Service",
+                grpc.service
+                    .clone()
+                    .unwrap_or_else(|| "whole server".into()),
+            ),
+            (
+                "Metadata",
+                if grpc.metadata.is_empty() {
+                    "—".into()
+                } else {
+                    grpc.metadata
+                        .iter()
+                        .map(|(name, _)| name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                },
+            ),
+        ],
+        CheckSpec::Mqtt(mqtt) => vec![
+            (
+                "Broker",
+                format!(
+                    "{}:{}{}",
+                    mqtt.host,
+                    mqtt.port(),
+                    if mqtt.tls { " (TLS)" } else { "" }
+                ),
+            ),
+            (
+                "Username",
+                mqtt.username.clone().unwrap_or_else(|| "—".into()),
+            ),
+            (
+                "Topic",
+                mqtt.topic
+                    .clone()
+                    .unwrap_or_else(|| "— (connect only)".into()),
+            ),
+            ("Expect", mqtt.expect.clone().unwrap_or_else(|| "—".into())),
+        ],
         CheckSpec::Push(push) => vec![(
             "Push URL",
             state

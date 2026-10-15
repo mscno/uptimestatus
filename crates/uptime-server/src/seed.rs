@@ -32,6 +32,9 @@ pub async fn apply(store: &Store, file: &ConfigFile, now: Timestamp) -> anyhow::
         spec.policy
             .validate()
             .with_context(|| format!("monitor `{}`", spec.key))?;
+        spec.check
+            .validate()
+            .with_context(|| format!("monitor `{}`", spec.key))?;
     }
     let mut report = SeedReport::default();
     for spec in &file.monitors {

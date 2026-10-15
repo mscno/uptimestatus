@@ -156,6 +156,23 @@ fn redact(spec: &mut MonitorSpec) {
         }
         CheckSpec::Dns(dns) => dns.expect = dns.expect.as_ref().map(|_| MASK.into()),
         CheckSpec::Push(push) => push.token = MASK.into(),
+        CheckSpec::Ping(_) => {}
+        CheckSpec::Database(db) => {
+            // Credentials, database name and options all live in the URL.
+            db.url = db.display_target();
+            db.query = db.query.as_ref().map(|_| MASK.into());
+            db.expect = db.expect.as_ref().map(|_| MASK.into());
+        }
+        CheckSpec::Grpc(grpc) => {
+            for (_, value) in &mut grpc.metadata {
+                *value = MASK.into();
+            }
+        }
+        CheckSpec::Mqtt(mqtt) => {
+            mqtt.username = mqtt.username.as_ref().map(|_| MASK.into());
+            mqtt.password = mqtt.password.as_ref().map(|_| MASK.into());
+            mqtt.expect = mqtt.expect.as_ref().map(|_| MASK.into());
+        }
     }
 }
 
@@ -270,6 +287,7 @@ fn parse_monitor(key: &str, mut body: Value) -> std::result::Result<MonitorSpec,
         .parse::<MonitorKey>()
         .map_err(|e| e.to_string())?;
     spec.policy.validate().map_err(|e| e.to_string())?;
+    spec.check.validate().map_err(|e| e.to_string())?;
     spec.tags = normalize_tags(&spec.tags.join(" ")).map_err(|e| e.to_string())?;
     spec.group = match spec.group.as_deref() {
         Some(group) => normalize_group(group).map_err(|e| e.to_string())?,

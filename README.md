@@ -8,9 +8,10 @@ or a Docker container, with SQLite, PostgreSQL or Turso for storage.
 
 ## Features
 
-- HTTP(S), TCP, DNS and push heartbeat monitors, with configurable timeouts and retries.
-  HTTP checks support status ranges, keywords, JSON assertions, custom requests and auth;
-  TCP checks can use TLS and send/expect rules.
+- HTTP(S), TCP, DNS, push heartbeat, ICMP ping, database (PostgreSQL, MySQL/MariaDB, Redis),
+  gRPC health and MQTT monitors, with configurable timeouts and retries. HTTP checks support
+  status ranges, keywords, JSON assertions, custom requests and auth; TCP checks can use TLS and
+  send/expect rules. See [Protocol checks](#protocol-checks).
 - Automatic incidents after the original check and all configured retries fail, with at least
   two failed attempts. Monitors retry once by default. Checks continue at the retry interval
   while down, returning to the normal interval on recovery. Recovery resolves the incident;
@@ -176,12 +177,65 @@ database; they coordinate over `LISTEN/NOTIFY`. SQLite and Turso use one instanc
 of the worker role in a process.
 
 Monitors and pages can be created in the console, through the [JSON API](#json-api), or from
-TOML (`seed`/`export`): `[[monitor]]` tables with a `check` (`type = "http"`, `"tcp"`, `"dns"`
-or `"push"`) and an optional `policy` (`interval`, `retries`, `retry_interval`, `timeout`,
+TOML (`seed`/`export`): `[[monitor]]` tables with a `check` (`type = "http"`, `"tcp"`, `"dns"`,
+`"push"`, `"ping"`, `"database"`, `"grpc"` or `"mqtt"`) and an optional `policy` (`interval`, `retries`, `retry_interval`, `timeout`,
 `invert`, `degraded_after`, `resend_every`), and `[[page]]` tables with `[[page.section]]`s. Pages can be styled with `accent` (a hex
 color), `theme` (`auto`, `light`, `dark`) and `look` (`pixel`, the 8-bit default, or `clean`:
 plain fonts and no starfield); the same options are in the page editor.
 See [`seed/monitors.example.toml`](seed/monitors.example.toml).
+
+### Protocol checks
+
+Every check connects only to addresses the address policy permits (public ones, unless
+`UPTIMESTATUS_CHECKS__ALLOW_PRIVATE_TARGETS` is set), and only within the monitor's timeout.
+Each `[monitor.check]` below belongs to its own `[[monitor]]`:
+
+```toml
+[monitor.check]            # ICMP echo; DOWN when packet loss reaches the threshold
+type = "ping"
+host = "example.com"
+count = 3                  # packets per check (1-10), default 3
+packet_timeout = "1s"      # wait per reply, default 1s
+loss_threshold_percent = 100  # default: DOWN only when every packet is lost
+
+[monitor.check]            # a query; UP when it succeeds (and the first value contains `expect`)
+type = "database"
+url = "postgres://monitor:secret@db.example.com:5432/app?sslmode=require"
+query = "SELECT count(*) FROM jobs WHERE failed"  # default SELECT 1 (PING for Redis)
+expect = "0"
+# ignore_tls_errors = true
+
+[monitor.check]            # grpc.health.v1.Health/Check; UP when SERVING
+type = "grpc"
+url = "https://api.example.com:443"   # http:// for plaintext HTTP/2
+service = "api.v1.Users"              # blank asks about the whole server
+metadata = [["authorization", "Bearer …"]]
+
+[monitor.check]            # CONNECT (and, with a topic, wait for one message)
+type = "mqtt"
+host = "broker.example.com"
+tls = true                 # port defaults to 1883, or 8883 with TLS
+username = "probe"
+password = "secret"
+topic = "devices/gateway/health"   # retained messages arrive at once
+expect = "online"
+```
+
+- **Ping** uses an unprivileged ICMP socket (Linux: `net.ipv4.ping_group_range` must include
+  the process's group; it also covers ICMPv6), falling back to a raw socket with `CAP_NET_RAW`.
+  The image's entrypoint allows unprivileged ICMP when it starts as root in a VM (Fly
+  Machines); Docker allows it by default. Without it, ping monitors fail with an explanation.
+- **Database** URLs carry credentials and are kept out of logs, errors and read-only API
+  responses (which see `scheme://host:port` only); use a read-only account. PostgreSQL takes
+  libpq-style `sslmode` (`disable`, `prefer`, `require`, `verify-ca`, `verify-full`;
+  certificates are verified against the system trust store unless errors are ignored);
+  MySQL/MariaDB takes `?require_ssl=true`; Redis uses `rediss://` for TLS, a password in the
+  URL, and a database number as the path. Queries are plain SQL, or a Redis command such as
+  `GET health` (quote arguments with spaces).
+- **gRPC** speaks HTTP/2, with TLS (ALPN `h2`) for `https://`. NOT_SERVING, or an unknown
+  service, is DOWN.
+- **MQTT** speaks 3.1.1. A refused CONNECT reports the broker's reason (e.g. bad username or
+  password); a topic with no message before the timeout is DOWN.
 
 ## Deploying
 
@@ -204,7 +258,9 @@ Requirements: Rust (pinned in `rust-toolchain.toml`), [mise](https://mise.jdx.de
 and a Postgres 18 server at `localhost:5433` (`postgres:postgres`). Override any value from
 `mise.toml`'s `[env]` in a local `.env`. The tests use PostgreSQL (each test gets a fresh
 database cloned from a migrated template); SQLite and Turso are covered by the store's
-`portable` tests.
+`portable` tests. Probe tests run gRPC, MQTT and Redis against in-process servers; set
+`UPTIMESTATUS_TEST_MYSQL_URL` (e.g. `mysql://root:pw@127.0.0.1:3306/mysql`, a stock server
+with its self-signed certificate) and `UPTIMESTATUS_TEST_REDIS_URL` to also probe real ones.
 
 ```sh
 mise install          # cargo-nextest, cargo-llvm-cov

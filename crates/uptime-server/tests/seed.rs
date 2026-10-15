@@ -149,6 +149,13 @@ title = "Platform"
 [[page.section]]
 name = "Core"
 components = [{ monitor = "api", label = "Public API" }]
+
+[[incident_template]]
+name = "Degraded"
+title = "{monitor} is degraded"
+impact = "minor"
+status = "investigating"
+body = "We are looking into slow responses."
 "#;
 
 #[tokio::test]
@@ -165,6 +172,8 @@ async fn seeds_pages_and_exports_everything_back() {
 
     assert_eq!(report.pages_created, ["platform"]);
     assert_eq!(again.pages_skipped, ["platform"]);
+    assert_eq!(report.templates_created, ["Degraded"]);
+    assert_eq!(again.templates_skipped, ["Degraded"]);
     let exported = db.store().export_config().await.unwrap();
     assert_eq!(exported, file, "export writes what seed reads");
     let text = exported.to_toml().unwrap();

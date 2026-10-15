@@ -85,6 +85,8 @@ pub async fn run(
                 skipped = ?report.skipped,
                 pages_created = ?report.pages_created,
                 pages_skipped = ?report.pages_skipped,
+                templates_created = ?report.templates_created,
+                templates_skipped = ?report.templates_skipped,
                 "seeded"
             );
         }

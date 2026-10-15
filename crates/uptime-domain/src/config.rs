@@ -3,9 +3,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{MonitorSpec, PageSpec};
+use crate::{IncidentTemplate, MonitorSpec, PageSpec};
 
-/// `[[monitor]]` and `[[page]]` tables.
+/// `[[monitor]]`, `[[page]]` and `[[incident_template]]` tables.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigFile {
@@ -13,6 +13,12 @@ pub struct ConfigFile {
     pub monitors: Vec<MonitorSpec>,
     #[serde(default, rename = "page", skip_serializing_if = "Vec::is_empty")]
     pub pages: Vec<PageSpec>,
+    #[serde(
+        default,
+        rename = "incident_template",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub incident_templates: Vec<IncidentTemplate>,
 }
 
 impl ConfigFile {
@@ -154,6 +160,13 @@ mod tests {
                     ],
                 }],
             }],
+            incident_templates: vec![crate::IncidentTemplate {
+                name: "Degraded API".into(),
+                title: "{monitor} is slow".into(),
+                impact: crate::Impact::Minor,
+                status: crate::IncidentStatus::Identified,
+                body: "Responses from {monitors} are slower than usual.".into(),
+            }],
         }
     }
 
@@ -169,6 +182,7 @@ mod tests {
             "durations stay human: {text}"
         );
         assert!(text.contains(r#"type = "group""#), "{text}");
+        assert!(text.contains("[[incident_template]]"), "{text}");
         assert_eq!(ConfigFile::from_toml(&text).unwrap(), file());
     }
 

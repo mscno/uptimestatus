@@ -1,5 +1,6 @@
-//! `uptimestatus seed <file>`: create the monitors and status pages in a TOML
-//! file ([`ConfigFile`]) that do not exist yet. `export` writes the same format.
+//! `uptimestatus seed <file>`: create the monitors, status pages and incident
+//! templates in a TOML file ([`ConfigFile`]) that do not exist yet. `export`
+//! writes the same format.
 
 use std::path::Path;
 
@@ -16,17 +17,20 @@ pub fn load(path: &Path) -> anyhow::Result<ConfigFile> {
     ConfigFile::from_toml(&toml).with_context(|| format!("parsing {}", path.display()))
 }
 
-/// What [`apply`] did, by monitor key and page slug.
+/// What [`apply`] did, by monitor key, page slug and template name.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct SeedReport {
     pub created: Vec<String>,
     pub skipped: Vec<String>,
     pub pages_created: Vec<String>,
     pub pages_skipped: Vec<String>,
+    pub templates_created: Vec<String>,
+    pub templates_skipped: Vec<String>,
 }
 
-/// Validates everything, then creates the monitors whose key and the pages
-/// whose slug do not exist yet (existing ones are left alone).
+/// Validates everything, then creates the monitors, pages and incident
+/// templates whose key, slug or name do not exist yet (existing ones are left
+/// alone).
 pub async fn apply(store: &Store, file: &ConfigFile, now: Timestamp) -> anyhow::Result<SeedReport> {
     for spec in &file.monitors {
         spec.policy
@@ -53,6 +57,16 @@ pub async fn apply(store: &Store, file: &ConfigFile, now: Timestamp) -> anyhow::
             Err(StoreError::DuplicateSlug(slug)) => report.pages_skipped.push(slug.to_string()),
             Err(error) => {
                 return Err(error).with_context(|| format!("creating page `{}`", page.slug));
+            }
+        }
+    }
+    for template in &file.incident_templates {
+        match store.create_template(template).await {
+            Ok(created) => report.templates_created.push(created.spec.name),
+            Err(StoreError::DuplicateTemplate(name)) => report.templates_skipped.push(name),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("creating incident template `{}`", template.name));
             }
         }
     }

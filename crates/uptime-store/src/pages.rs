@@ -171,12 +171,19 @@ impl Store {
             }))
     }
 
-    /// Deletes a page and its layout. Returns whether it existed.
+    /// Deletes a page with its layout and report links. Returns whether it existed.
     pub async fn delete_page(&self, id: i64) -> Result<bool> {
+        let mut db = self.db();
+        let mut tx = self.transaction(&mut db).await?;
+        toasty::sql::statement(r#"DELETE FROM "report_links" WHERE "page_id" = $1"#)
+            .bind(id)
+            .exec(&mut tx)
+            .await?;
         let deleted = toasty::sql::statement(r#"DELETE FROM "status_pages" WHERE "id" = $1"#)
             .bind(id)
-            .exec(&mut self.db())
+            .exec(&mut tx)
             .await?;
+        tx.commit().await?;
         Ok(deleted > 0)
     }
 

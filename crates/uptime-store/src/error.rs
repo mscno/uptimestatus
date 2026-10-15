@@ -52,6 +52,21 @@ pub enum StoreError {
 
     #[error("subscriber {0} not found")]
     SubscriberNotFound(i64),
+    #[error(transparent)]
+    InvalidTemplate(#[from] uptime_domain::TemplateError),
+
+    #[error("an incident template named `{0}` already exists")]
+    DuplicateTemplate(String),
+
+    #[error("incident template {0} not found")]
+    TemplateNotFound(i64),
+
+    /// Already published or cancelled.
+    #[error("scheduled update {0} not found")]
+    ScheduledNotFound(i64),
+
+    #[error("report link {0} not found")]
+    ReportLinkNotFound(i64),
 
     #[error("group monitors would include each other: {}", .0.join(", "))]
     GroupCycle(Vec<String>),

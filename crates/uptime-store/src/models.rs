@@ -193,6 +193,11 @@ pub struct StatusPageRecord {
     pub favicon: Option<String>,
     /// Extra CSS served as `/s/{slug}/custom.css`.
     pub custom_css: Option<String>,
+    /// Monthly reports: `NULL` or `false` publishes them with the page;
+    /// `true` keeps them to admins and shareable links.
+    pub reports_private: Option<bool>,
+    /// The uptime the page promises, a percentage such as `99.9`.
+    pub sla_target: Option<String>,
     #[auto]
     pub created_at: Timestamp,
     #[auto]
@@ -517,4 +522,76 @@ pub struct SubscriberOutboxRecord {
     pub sent_at: Option<Timestamp>,
     pub failed_at: Option<Timestamp>,
     pub last_error: Option<String>,
+}
+
+/// A reusable incident: what to pre-fill when declaring or updating one.
+/// Placeholders are expanded when the incident is published.
+#[derive(Debug, toasty::Model)]
+#[table = "incident_templates"]
+pub struct IncidentTemplateRecord {
+    #[key]
+    #[auto]
+    pub id: i64,
+    #[unique]
+    pub name: String,
+    pub title: String,
+    /// `none`, `minor`, `major` or `critical`.
+    pub impact: String,
+    /// `investigating`, `identified`, `monitoring` or `resolved`.
+    pub status: String,
+    pub body: String,
+    #[auto]
+    pub created_at: Timestamp,
+    #[auto]
+    pub updated_at: Timestamp,
+}
+
+/// An incident declaration or update waiting to be published. Publishing
+/// deletes the row in the same transaction that changes the incident, so
+/// each is published exactly once.
+#[derive(Debug, toasty::Model)]
+#[table = "scheduled_incident_updates"]
+pub struct ScheduledUpdateRecord {
+    #[key]
+    #[auto]
+    pub id: i64,
+    /// `NULL` declares a new incident.
+    #[index]
+    pub incident_id: Option<i64>,
+    #[index]
+    pub publish_at: Timestamp,
+    /// The incident status the update moves to.
+    pub status: String,
+    pub body: String,
+    /// Declarations: the new incident's title, impact and monitor keys (JSON).
+    pub title: Option<String>,
+    pub impact: Option<String>,
+    pub monitors: Option<String>,
+    /// Who scheduled it; the audit trail names them when it is published.
+    pub actor: String,
+    /// Why publishing failed (it is then skipped until edited).
+    pub error: Option<String>,
+    #[auto]
+    pub created_at: Timestamp,
+}
+
+/// A link that opens a status page's private monthly reports.
+#[derive(Debug, toasty::Model)]
+#[table = "report_links"]
+pub struct ReportLinkRecord {
+    #[key]
+    #[auto]
+    pub id: i64,
+    #[index]
+    pub page_id: i64,
+    /// `YYYY-MM`, or `NULL` for every month.
+    pub month: Option<String>,
+    /// SHA-256 of the link's key, hex; the key itself is shown once.
+    #[unique]
+    pub token_hash: String,
+    pub label: Option<String>,
+    pub expires_at: Option<Timestamp>,
+    pub created_by: String,
+    #[auto]
+    pub created_at: Timestamp,
 }

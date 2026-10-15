@@ -154,3 +154,8 @@ snapshot_name = "0029_snapshot.toml"
 id = 1544813769803533875
 name = "0030_subscribers.sql"
 snapshot_name = "0030_snapshot.toml"
+
+[[migrations]]
+id = 1454239202183093199
+name = "0031_reports_templates_schedules.sql"
+snapshot_name = "0031_snapshot.toml"

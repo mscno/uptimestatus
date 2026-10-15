@@ -20,6 +20,7 @@ mod logging;
 pub mod media;
 mod metrics;
 mod pages;
+pub mod publish;
 mod state;
 mod status;
 mod views;
@@ -247,6 +248,15 @@ fn topcoat_router(state: &AppState) -> topcoat::router::Router {
         .route(admin::delete_channel)
         .route(admin::test_channel)
         .page(admin::incidents_page)
+        .page(admin::templates_page)
+        .page(admin::new_template)
+        .route(admin::create_template)
+        .page(admin::edit_template)
+        .route(admin::update_template)
+        .route(admin::delete_template)
+        .page(admin::edit_scheduled)
+        .route(admin::update_scheduled)
+        .route(admin::cancel_scheduled)
         .page(admin::new_incident)
         .route(admin::create_incident)
         .page(admin::incident_detail)

@@ -19,10 +19,13 @@ mod monitors;
 mod notifications;
 mod pages;
 mod queue;
+mod reports;
 mod reseal;
 mod results;
+mod scheduled;
 pub mod secrets;
 mod subscribers;
+mod templates;
 mod tokens;
 
 use jiff::{Timestamp, civil::Date};
@@ -40,13 +43,16 @@ pub use monitors::{Monitor, MonitorOverview, RuntimeSnapshot};
 pub use notifications::{Channel, Delivery, DeliveryLog, DeliveryStatus};
 pub use pages::{Page, PageImage, PageSummary};
 pub use queue::Claim;
+pub use reports::{ReportLink, ReportSettings};
 pub use reseal::ResealReport;
 pub use results::{CertUpdate, CheckRecord, StoredCheck, WINDOW_LIMIT, WindowCheck};
+pub use scheduled::{NewScheduledUpdate, ScheduledKind, ScheduledUpdate};
 pub use subscribers::{
     CONFIRM_FOR, DISABLE_AFTER, DISABLE_AFTER_FAILURES, EmailSettings, EmailSettingsInput,
     LinkPurpose, MANAGE_FOR, Message, NewSubscription, Subscribed, Subscriber, SubscriberCounts,
     SubscriberDelivery,
 };
+pub use templates::Template;
 pub use toasty::migration::{MigrationReport, MigrationSet};
 pub use tokens::{ApiToken, NewApiToken};
 pub use uptime_domain::{DnsRecord, DomainState, SenderDomain};

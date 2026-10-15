@@ -21,21 +21,26 @@ use topcoat::{
 use uptime_domain::{
     Health, Impact, IncidentKind, IncidentStatus, MaintenanceSpec, MonitorKey, Repeat,
 };
-use uptime_store::{AdminUser, Incident, Monitor, NewIncident, StoreError, StoredCheck};
+use uptime_store::{
+    AdminUser, Incident, Monitor, NewIncident, NewScheduledUpdate, ScheduledKind, ScheduledUpdate,
+    StoreError, StoredCheck, Template,
+};
 
 use super::{
     Id,
     form::FormErrors,
+    templates::template_picker,
     views::{checkbox, target, text_area, text_field},
 };
 use crate::{
     audit,
     auth::{app, require_admin},
     fmt,
+    publish::{self, Via},
     views::{admin_shell, ago, delete_button, health_pill, state_pill},
 };
 
-fn path_id(cx: &Cx) -> Result<i64> {
+pub(super) fn path_id(cx: &Cx) -> Result<i64> {
     Ok(*path_param::<Id>(cx)?)
 }
 
@@ -48,7 +53,7 @@ fn chosen_monitors(extra: &BTreeMap<String, String>) -> Vec<MonitorKey> {
         .collect()
 }
 
-fn impact_pill(impact: Impact) -> &'static str {
+pub(super) fn impact_pill(impact: Impact) -> &'static str {
     match impact {
         Impact::None => "pill pill-maintenance",
         Impact::Minor => "pill pill-degraded",
@@ -56,7 +61,7 @@ fn impact_pill(impact: Impact) -> &'static str {
     }
 }
 
-fn status_pill(status: IncidentStatus) -> &'static str {
+pub(super) fn status_pill(status: IncidentStatus) -> &'static str {
     match status {
         IncidentStatus::Resolved => "pill pill-up",
         IncidentStatus::Monitoring => "pill pill-maintenance",
@@ -103,6 +108,7 @@ async fn monitor_toggles(
 pub(crate) async fn incidents_page(cx: &Cx) -> Result<impl View> {
     let admin = require_admin(cx).await?;
     let incidents = app(cx).store.list_incidents(100).await?;
+    let scheduled = app(cx).store.scheduled_declarations().await?;
     let rows: Vec<_> = incidents
         .into_iter()
         .map(|incident| {
@@ -119,8 +125,16 @@ pub(crate) async fn incidents_page(cx: &Cx) -> Result<impl View> {
             <div class="page-head">
                 <h1>"Incidents"</h1>
                 <span class="spacer"></span>
+                <a class="btn" href="/admin/incidents/templates">"Templates"</a>
                 <a class="btn btn-primary" href="/admin/incidents/new">"Declare incident"</a>
             </div>
+            if !scheduled.is_empty() {
+                <div class="card table-wrap">
+                    <h2>"Scheduled"</h2>
+                    <p class="small muted">"Declarations waiting to be published. They are not on status pages yet."</p>
+                    scheduled_list(items: &scheduled, now: now)
+                </div>
+            }
             if rows.is_empty() {
                 <div class="card empty">
                     <p><strong>"No incidents."</strong></p>
@@ -154,6 +168,35 @@ pub(crate) async fn incidents_page(cx: &Cx) -> Result<impl View> {
     })
 }
 
+/// Scheduled declarations or updates: when, what, and edit/cancel actions.
+#[component]
+async fn scheduled_list(items: &[ScheduledUpdate], now: Timestamp) -> Result<impl View> {
+    Ok(view! {
+        <ol class="timeline scheduled">
+            for item in items {
+                <li>
+                    <span class=(status_pill(item.status))>(item.status.label())</span>
+                    " "
+                    <span class="small muted">"Scheduled for " (fmt::when(item.publish_at)) " · " ago(at: item.publish_at, now: now)</span>
+                    if let ScheduledKind::Declare { title, .. } = &item.kind {
+                        <p><strong>(title.as_str())</strong></p>
+                    }
+                    <p>(item.body.as_str())</p>
+                    if let Some(error) = &item.error {
+                        <p class="flash flash-error">"Could not publish: " (error.as_str()) ". Edit it to try again."</p>
+                    }
+                    <div class="row">
+                        <a class="btn btn-link" href=(format!("/admin/incidents/scheduled/{}", item.id))>"Edit"</a>
+                        <form method="post" action=(format!("/admin/incidents/scheduled/{}/cancel", item.id))>
+                            <button class="btn btn-link" type="submit">"Cancel"</button>
+                        </form>
+                    </div>
+                </li>
+            }
+        </ol>
+    })
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct IncidentForm {
@@ -161,13 +204,36 @@ pub(crate) struct IncidentForm {
     impact: String,
     status: String,
     message: String,
+    /// `datetime-local` (UTC); blank publishes now.
+    publish_at: String,
     #[serde(flatten)]
     extra: BTreeMap<String, String>,
 }
 
+/// A `publish_at` field: `None` to publish now (blank, or not in the future).
+fn publish_at(text: &str, now: Timestamp, errors: &mut FormErrors) -> Option<Timestamp> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    match fmt::parse_datetime_local(text) {
+        Some(at) if at > now => Some(at),
+        Some(_) => None,
+        None => {
+            errors.insert(
+                "publish_at",
+                "Enter a date and time (UTC), or leave it blank to publish now.",
+            );
+            None
+        }
+    }
+}
+
 impl IncidentForm {
-    fn to_new(&self) -> Result<NewIncident, FormErrors> {
+    /// The incident, and when to publish it (`None`: now).
+    fn to_new(&self, now: Timestamp) -> Result<(NewIncident, Option<Timestamp>), FormErrors> {
         let mut errors = FormErrors::default();
+        let publish_at = publish_at(&self.publish_at, now, &mut errors);
         if self.title.trim().is_empty() {
             errors.insert("title", "Give the incident a title.");
         }
@@ -187,13 +253,16 @@ impl IncidentForm {
             errors.insert("monitors", "Choose at least one affected monitor.");
         }
         if errors.is_empty() {
-            Ok(NewIncident {
-                title: self.title.trim().to_owned(),
-                impact,
-                status,
-                message: self.message.trim().to_owned(),
-                monitors,
-            })
+            Ok((
+                NewIncident {
+                    title: self.title.trim().to_owned(),
+                    impact,
+                    status,
+                    message: self.message.trim().to_owned(),
+                    monitors,
+                },
+                publish_at,
+            ))
         } else {
             Err(errors)
         }
@@ -201,7 +270,7 @@ impl IncidentForm {
 }
 
 #[component]
-async fn select_field(
+pub(super) async fn select_field(
     name: &str,
     label: &str,
     options: Vec<(&'static str, &'static str)>,
@@ -220,14 +289,14 @@ async fn select_field(
     })
 }
 
-fn impacts() -> Vec<(&'static str, &'static str)> {
+pub(super) fn impacts() -> Vec<(&'static str, &'static str)> {
     Impact::ALL
         .iter()
         .map(|i| (i.as_str(), i.label()))
         .collect()
 }
 
-fn statuses() -> Vec<(&'static str, &'static str)> {
+pub(super) fn statuses() -> Vec<(&'static str, &'static str)> {
     IncidentStatus::ALL
         .iter()
         .map(|s| (s.as_str(), s.label()))
@@ -254,7 +323,8 @@ async fn incident_form(
                     select_field(name: "status", label: "Status", options: statuses(), selected: &form.status)
                 </div>
                 text_area(name: "message", label: "First update", value: &form.message, errors: errors,
-                    hint: "Shown on every status page that includes an affected monitor.")
+                    hint: "Shown on every status page that includes an affected monitor. Placeholders such as {monitor} are filled in when it is published.")
+                publish_at_field(value: &form.publish_at, errors: errors)
             </fieldset>
             monitor_toggles(monitors: monitors, chosen: &chosen, errors: errors)
             <div class="actions">
@@ -265,20 +335,70 @@ async fn incident_form(
     })
 }
 
+/// "Publish at": when to publish, in UTC; blank publishes now.
+#[component]
+async fn publish_at_field(value: &str, errors: &FormErrors) -> Result<impl View> {
+    let error = errors.get("publish_at").map(str::to_owned);
+    Ok(view! {
+        <div class="field">
+            <label for="field-publish_at">"Publish at (UTC)"</label>
+            <input type="datetime-local" id="field-publish_at" name="publish_at" value=(value)
+                aria-invalid=(error.is_some().then_some("true"))>
+            if let Some(error) = error {
+                <span class="error">(error)</span>
+            } else {
+                <span class="hint">"Optional. Leave blank to publish now; a later time schedules it."</span>
+            }
+        </div>
+    })
+}
+
+/// `?template=<id>`: pre-fill a form from an incident template.
+#[topcoat::router::query_params]
+pub(crate) struct TemplateQuery {
+    template: Option<String>,
+}
+
+/// The template asked for in the query, if it exists.
+async fn chosen_template(cx: &Cx) -> Result<Option<Template>> {
+    let Some(id) = topcoat::router::query_params::<TemplateQuery>(cx)
+        .ok()
+        .and_then(|q| q.template.as_deref()?.trim().parse::<i64>().ok())
+    else {
+        return Ok(None);
+    };
+    Ok(app(cx).store.template(id).await?)
+}
+
 #[page("/admin/incidents/new")]
 pub(crate) async fn new_incident(cx: &Cx) -> Result<impl View> {
     let admin = require_admin(cx).await?;
-    let monitors = app(cx).store.list_monitors().await?;
-    let form = IncidentForm {
-        impact: Impact::Minor.as_str().into(),
-        status: IncidentStatus::Investigating.as_str().into(),
-        ..IncidentForm::default()
+    let state = app(cx);
+    let monitors = state.store.list_monitors().await?;
+    let templates = state.store.list_templates().await?;
+    let template = chosen_template(cx).await?;
+    let form = match &template {
+        Some(template) => IncidentForm {
+            title: template.spec.title.clone(),
+            impact: template.spec.impact.as_str().into(),
+            status: template.spec.status.as_str().into(),
+            message: template.spec.body.clone(),
+            ..IncidentForm::default()
+        },
+        None => IncidentForm {
+            impact: Impact::Minor.as_str().into(),
+            status: IncidentStatus::Investigating.as_str().into(),
+            ..IncidentForm::default()
+        },
     };
     let errors = FormErrors::default();
     Ok(view! {
         admin_shell(title: "Declare incident", admin: &admin, section: "incidents",
             <div class="page-head"><h1>"Declare incident"</h1></div>
-            <div class="card">incident_form(form: &form, errors: &errors, monitors: &monitors)</div>
+            <div class="card">
+                template_picker(action: "/admin/incidents/new", templates: &templates, chosen: template.as_ref().map(|t| t.id))
+                incident_form(form: &form, errors: &errors, monitors: &monitors)
+            </div>
         )
     })
 }
@@ -287,35 +407,47 @@ pub(crate) async fn new_incident(cx: &Cx) -> Result<impl View> {
 pub(crate) async fn create_incident(cx: &Cx, Form(input): Form<IncidentForm>) -> Result<Response> {
     let admin = require_admin(cx).await?;
     let state = app(cx);
-    let errors = match input.to_new() {
-        Ok(new) => match state.store.declare_incident(&new, Timestamp::now()).await {
-            Ok(incident) => {
-                state.pages.clear();
-                tracing::info!(incident = incident.id, by = %admin.login, "incident declared");
-                audit::record(
-                    state,
-                    audit::admin(&admin),
-                    "incident.declare",
-                    audit::target("incident", incident.id),
-                    format!("Declared incident {}", new.title),
-                    json!({
-                        "title": new.title,
-                        "impact": new.impact.as_str(),
-                        "status": new.status.as_str(),
-                        "message": new.message,
-                        "monitors": new.monitors.iter().map(ToString::to_string).collect::<Vec<_>>(),
-                    }),
-                )
-                .await?;
-                return see_other(format!("/admin/incidents/{}", incident.id)).into_response(cx);
+    let now = Timestamp::now();
+    let errors = match input.to_new(now) {
+        Ok((new, Some(at))) => {
+            let scheduled = NewScheduledUpdate {
+                publish_at: at,
+                status: new.status,
+                body: new.message.clone(),
+                kind: ScheduledKind::Declare {
+                    title: new.title.clone(),
+                    impact: new.impact,
+                    monitors: new.monitors.clone(),
+                },
+                actor: audit::admin(&admin),
+            };
+            match state.store.schedule_update(&scheduled).await {
+                Ok(scheduled) => {
+                    record_schedule(state, &admin, "incident.schedule", &scheduled).await?;
+                    return see_other("/admin/incidents").into_response(cx);
+                }
+                Err(StoreError::UnknownMonitors(keys)) => {
+                    let mut errors = FormErrors::default();
+                    errors.insert("monitors", format!("Unknown monitors: {keys:?}"));
+                    errors
+                }
+                Err(error) => return Err(error.into()),
             }
-            Err(StoreError::UnknownMonitors(keys)) => {
-                let mut errors = FormErrors::default();
-                errors.insert("monitors", format!("Unknown monitors: {keys:?}"));
-                errors
+        }
+        Ok((new, None)) => {
+            match publish::declare(state, &audit::admin(&admin), &new, Via::Direct, now).await? {
+                Ok(incident) => {
+                    return see_other(format!("/admin/incidents/{}", incident.id))
+                        .into_response(cx);
+                }
+                Err(StoreError::UnknownMonitors(keys)) => {
+                    let mut errors = FormErrors::default();
+                    errors.insert("monitors", format!("Unknown monitors: {keys:?}"));
+                    errors
+                }
+                Err(error) => return Err(error.into()),
             }
-            Err(error) => return Err(error.into()),
-        },
+        }
         Err(errors) => errors,
     };
     let monitors = state.store.list_monitors().await?;
@@ -549,6 +681,13 @@ pub(crate) async fn incident_detail(cx: &Cx) -> Result<impl View> {
         IncidentStatus::Identified => IncidentStatus::Monitoring,
         IncidentStatus::Monitoring | IncidentStatus::Resolved => IncidentStatus::Resolved,
     };
+    let templates = state.store.list_templates().await?;
+    let template = chosen_template(cx).await?;
+    let (next_status, draft) = match &template {
+        Some(template) => (template.spec.status, template.spec.body.clone()),
+        None => (next_status, String::new()),
+    };
+    let scheduled = state.store.scheduled_for_incident(incident.id).await?;
     // Check diagnostics have their own table.
     let updates: Vec<_> = incident
         .updates
@@ -592,6 +731,11 @@ pub(crate) async fn incident_detail(cx: &Cx) -> Result<impl View> {
                 outage_summary(incident: &incident, affected: &affected, checks: &checks, now: now)
                 <div class="card">
                     <h2>"Timeline"</h2>
+                    if !scheduled.is_empty() {
+                        <h3 class="label">"Scheduled"</h3>
+                        scheduled_list(items: &scheduled, now: now)
+                        <h3 class="label">"Published"</h3>
+                    }
                     <ol class="timeline">
                         for update in &updates {
                             <li>
@@ -610,10 +754,12 @@ pub(crate) async fn incident_detail(cx: &Cx) -> Result<impl View> {
             }
             <div class="card">
                 <h2>"Post an update"</h2>
+                template_picker(action: &base, templates: &templates, chosen: template.as_ref().map(|t| t.id))
                 <form method="post" action=(update_url)>
                     select_field(name: "status", label: "Status", options: statuses(), selected: next_status.as_str())
-                    text_area(name: "message", label: "Message", value: "", errors: &no_errors,
-                        hint: "What changed, what visitors should expect.")
+                    text_area(name: "message", label: "Message", value: &draft, errors: &no_errors,
+                        hint: "What changed, what visitors should expect. Choose Resolved with a later time to schedule the resolution.")
+                    publish_at_field(value: "", errors: &no_errors)
                     <div class="actions"><button class="btn btn-primary" type="submit">"Post update"</button></div>
                 </form>
             </div>
@@ -626,6 +772,8 @@ pub(crate) async fn incident_detail(cx: &Cx) -> Result<impl View> {
 pub(crate) struct UpdateForm {
     status: String,
     message: String,
+    /// `datetime-local` (UTC); blank publishes now.
+    publish_at: String,
 }
 
 #[route(POST "/admin/incidents/{id}/updates")]
@@ -645,30 +793,46 @@ pub(crate) async fn post_incident_update(
     } else {
         input.message
     };
-    let incident = match state
-        .store
-        .post_incident_update(id, status, &message, Timestamp::now())
-        .await
+    let now = Timestamp::now();
+    let mut errors = FormErrors::default();
+    if let Some(at) = publish_at(&input.publish_at, now, &mut errors) {
+        let scheduled = match state
+            .store
+            .schedule_update(&NewScheduledUpdate {
+                publish_at: at,
+                status,
+                body: message,
+                kind: ScheduledKind::Update { incident_id: id },
+                actor: audit::admin(&admin),
+            })
+            .await
+        {
+            Ok(scheduled) => scheduled,
+            Err(StoreError::IncidentNotFound(_)) => return Err(not_found().into()),
+            Err(error) => return Err(error.into()),
+        };
+        record_schedule(state, &admin, "incident.schedule", &scheduled).await?;
+        return Ok(see_other(format!("/admin/incidents/{id}")));
+    }
+    if !errors.is_empty() {
+        // Browsers always send a valid time; never publish a garbled one now.
+        return Ok(see_other(format!("/admin/incidents/{id}")));
+    }
+    match publish::update(
+        state,
+        &audit::admin(&admin),
+        id,
+        status,
+        &message,
+        Via::Direct,
+        now,
+    )
+    .await?
     {
-        Ok(incident) => incident,
+        Ok(_) => {}
         Err(StoreError::IncidentNotFound(_)) => return Err(not_found().into()),
         Err(error) => return Err(error.into()),
-    };
-    state.pages.clear();
-    tracing::info!(incident = id, status = %status, by = %admin.login, "incident updated");
-    audit::record(
-        state,
-        audit::admin(&admin),
-        "incident.update",
-        audit::target("incident", id),
-        format!(
-            "Posted a {} update to {}",
-            status.label().to_lowercase(),
-            incident.title
-        ),
-        json!({ "status": status.as_str(), "message": message }),
-    )
-    .await?;
+    }
     Ok(see_other(format!("/admin/incidents/{id}")))
 }
 
@@ -746,6 +910,205 @@ pub(crate) async fn delete_incident(cx: &Cx) -> Result<SeeOther> {
     )
     .await?;
     Ok(see_other("/admin/incidents"))
+}
+
+// ── Scheduled declarations and updates ───────────────────────────────────
+
+/// Records scheduling, rescheduling or cancelling `scheduled`.
+async fn record_schedule(
+    state: &crate::AppState,
+    admin: &AdminUser,
+    action: &str,
+    scheduled: &ScheduledUpdate,
+) -> Result<()> {
+    let (verb, what) = match action {
+        "incident.schedule" => ("Scheduled", "for"),
+        "incident.reschedule" => ("Rescheduled", "for"),
+        _ => ("Cancelled", "planned for"),
+    };
+    let subject = match &scheduled.kind {
+        ScheduledKind::Declare { title, .. } => format!("the incident {title}"),
+        ScheduledKind::Update { incident_id } => {
+            format!(
+                "a {} update to incident {incident_id}",
+                scheduled.status.label().to_lowercase()
+            )
+        }
+    };
+    audit::record(
+        state,
+        audit::admin(admin),
+        action,
+        scheduled
+            .incident_id()
+            .and_then(|id| audit::target("incident", id)),
+        format!(
+            "{verb} {subject} {what} {}",
+            fmt::when(scheduled.publish_at)
+        ),
+        json!({
+            "scheduled": scheduled.id,
+            "publish_at": scheduled.publish_at,
+            "status": scheduled.status.as_str(),
+            "message": scheduled.body,
+        }),
+    )
+    .await
+}
+
+/// Where a scheduled item is listed: its incident, or the incidents page.
+fn scheduled_home(scheduled: &ScheduledUpdate) -> String {
+    scheduled.incident_id().map_or_else(
+        || "/admin/incidents".to_owned(),
+        |id| format!("/admin/incidents/{id}"),
+    )
+}
+
+async fn load_scheduled(cx: &Cx) -> Result<ScheduledUpdate> {
+    Ok(app(cx)
+        .store
+        .scheduled(path_id(cx)?)
+        .await?
+        .ok_or_else(not_found)?)
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct ScheduledForm {
+    /// Declarations only.
+    title: String,
+    impact: String,
+    status: String,
+    message: String,
+    publish_at: String,
+}
+
+#[component]
+async fn scheduled_form(
+    scheduled: &ScheduledUpdate,
+    form: &ScheduledForm,
+    errors: &FormErrors,
+) -> Result<impl View> {
+    let declaration = matches!(scheduled.kind, ScheduledKind::Declare { .. });
+    Ok(view! {
+        <form method="post" action=(format!("/admin/incidents/scheduled/{}", scheduled.id))>
+            if !errors.is_empty() {
+                <p class="flash flash-error" role="alert">"Some fields need attention."</p>
+            }
+            if declaration {
+                text_field(name: "title", label: "Title", value: &form.title, errors: errors)
+                select_field(name: "impact", label: "Impact", options: impacts(), selected: &form.impact)
+            }
+            select_field(name: "status", label: "Status", options: statuses(), selected: &form.status)
+            text_area(name: "message", label: "Message", value: &form.message, errors: errors)
+            <div class="field">
+                <label for="field-publish_at">"Publish at (UTC)"</label>
+                <input type="datetime-local" id="field-publish_at" name="publish_at" value=(form.publish_at.as_str()) required=""
+                    aria-invalid=(errors.get("publish_at").is_some().then_some("true"))>
+                if let Some(error) = errors.get("publish_at") {
+                    <span class="error">(error.to_owned())</span>
+                }
+            </div>
+            <div class="actions">
+                <button class="btn btn-primary" type="submit">"Save"</button>
+                <a class="btn btn-link" href=(scheduled_home(scheduled))>"Back"</a>
+            </div>
+        </form>
+    })
+}
+
+#[page("/admin/incidents/scheduled/{id}")]
+pub(crate) async fn edit_scheduled(cx: &Cx) -> Result<impl View> {
+    let admin = require_admin(cx).await?;
+    let scheduled = load_scheduled(cx).await?;
+    let (title, impact) = match &scheduled.kind {
+        ScheduledKind::Declare { title, impact, .. } => (title.clone(), impact.as_str().to_owned()),
+        ScheduledKind::Update { .. } => (String::new(), String::new()),
+    };
+    let form = ScheduledForm {
+        title,
+        impact,
+        status: scheduled.status.as_str().to_owned(),
+        message: scheduled.body.clone(),
+        publish_at: fmt::datetime_local(scheduled.publish_at),
+    };
+    let errors = FormErrors::default();
+    Ok(view! {
+        admin_shell(title: "Scheduled update", admin: &admin, section: "incidents",
+            <div class="page-head"><h1>"Scheduled update"</h1></div>
+            if let Some(error) = &scheduled.error {
+                <p class="flash flash-error">"Could not publish: " (error.as_str()) ". Saving tries again."</p>
+            }
+            <div class="card">scheduled_form(scheduled: &scheduled, form: &form, errors: &errors)</div>
+        )
+    })
+}
+
+#[route(POST "/admin/incidents/scheduled/{id}")]
+pub(crate) async fn update_scheduled(
+    cx: &Cx,
+    Form(input): Form<ScheduledForm>,
+) -> Result<Response> {
+    let admin = require_admin(cx).await?;
+    let state = app(cx);
+    let scheduled = load_scheduled(cx).await?;
+    let mut errors = FormErrors::default();
+    let publish_at = match fmt::parse_datetime_local(&input.publish_at) {
+        Some(at) => Some(at),
+        None => {
+            errors.insert("publish_at", "Enter a date and time (UTC).");
+            None
+        }
+    };
+    let status = input.status.parse::<IncidentStatus>().unwrap_or_else(|e| {
+        errors.insert("status", e);
+        IncidentStatus::Investigating
+    });
+    if input.message.trim().is_empty() {
+        errors.insert("message", "Write the message visitors will read.");
+    }
+    let declaration = match scheduled.kind {
+        ScheduledKind::Declare { .. } => {
+            if input.title.trim().is_empty() {
+                errors.insert("title", "Give the incident a title.");
+            }
+            let impact = input.impact.parse::<Impact>().unwrap_or_else(|e| {
+                errors.insert("impact", e);
+                Impact::Minor
+            });
+            Some((input.title.trim(), impact))
+        }
+        ScheduledKind::Update { .. } => None,
+    };
+    if let (true, Some(at)) = (errors.is_empty(), publish_at) {
+        let updated = state
+            .store
+            .reschedule(scheduled.id, at, status, &input.message, declaration)
+            .await?;
+        record_schedule(state, &admin, "incident.reschedule", &updated).await?;
+        return see_other(scheduled_home(&updated)).into_response(cx);
+    }
+    let html = view! { cx =>
+        admin_shell(title: "Scheduled update", admin: &admin, section: "incidents",
+            <div class="page-head"><h1>"Scheduled update"</h1></div>
+            <div class="card">scheduled_form(scheduled: &scheduled, form: &input, errors: &errors)</div>
+        )
+    }
+    .single()
+    .await?
+    .render(cx);
+    (StatusCode::UNPROCESSABLE_ENTITY, Html(html)).into_response(cx)
+}
+
+#[route(POST "/admin/incidents/scheduled/{id}/cancel")]
+pub(crate) async fn cancel_scheduled(cx: &Cx) -> Result<SeeOther> {
+    let admin = require_admin(cx).await?;
+    let state = app(cx);
+    let scheduled = load_scheduled(cx).await?;
+    if state.store.cancel_scheduled(scheduled.id).await? {
+        record_schedule(state, &admin, "incident.unschedule", &scheduled).await?;
+    }
+    Ok(see_other(scheduled_home(&scheduled)))
 }
 
 // ── Maintenance ──────────────────────────────────────────────────────────

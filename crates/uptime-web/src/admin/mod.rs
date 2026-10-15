@@ -12,6 +12,7 @@ mod incidents;
 pub mod page_form;
 mod pages;
 mod subscriptions;
+mod templates;
 mod tokens;
 mod views;
 
@@ -105,9 +106,10 @@ pub(crate) use components::{
 pub(crate) use domains::{add_domain, remove_domain, verify_domain};
 pub(crate) use images::{remove_image, upload_image};
 pub(crate) use incidents::{
-    create_incident, create_maintenance, delete_incident, delete_maintenance, edit_maintenance,
-    excuse_incident, incident_detail, incidents_page, maintenance_page, new_incident,
-    new_maintenance, post_incident_update, update_maintenance,
+    cancel_scheduled, create_incident, create_maintenance, delete_incident, delete_maintenance,
+    edit_maintenance, edit_scheduled, excuse_incident, incident_detail, incidents_page,
+    maintenance_page, new_incident, new_maintenance, post_incident_update, update_maintenance,
+    update_scheduled,
 };
 pub(crate) use pages::{
     create_page, delete_page, edit_page, export_toml, new_page, pages_list, update_page,
@@ -115,6 +117,9 @@ pub(crate) use pages::{
 pub(crate) use subscriptions::{
     email_page, export_subscribers, remove_subscriber, save_email, send_test, setup_domain,
     stop_subscriber, subscribers_page, verify_domain as verify_sender_domain,
+};
+pub(crate) use templates::{
+    create_template, delete_template, edit_template, new_template, templates_page, update_template,
 };
 pub(crate) use tokens::{api_page, create_token, revoke_token};
 

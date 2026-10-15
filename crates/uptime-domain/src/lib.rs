@@ -26,9 +26,11 @@ pub mod protocol;
 pub mod push;
 pub mod report;
 pub mod routing;
+pub mod sla;
 pub mod state;
 pub mod status_codes;
 pub mod subscription;
+pub mod template;
 pub mod uptime;
 pub mod verdict;
 
@@ -65,11 +67,13 @@ pub use protocol::{CheckError, DatabaseCheck, DatabaseEngine, GrpcCheck, MqttChe
 pub use push::Push;
 pub use report::Report;
 pub use routing::{QuietHours, Routing, RoutingError};
+pub use sla::{Month, MonthFigures, SlaTarget, month_figures, overall_uptime};
 pub use state::{MonitorState, Runtime, Step, Transition, UnknownState};
 pub use status_codes::{StatusRanges, StatusRangesError};
 pub use subscription::{
     ComponentNotice, IncidentNotice, MaintenanceNotice, PageEvent, Selection, SubscriberKind,
     SubscriberStatus,
 };
+pub use template::{IncidentTemplate, Placeholders, TemplateError, expand};
 pub use uptime::{Tally, UptimeWindows};
 pub use verdict::{DownReason, Health, UnknownHealth, Verdict, evaluate};

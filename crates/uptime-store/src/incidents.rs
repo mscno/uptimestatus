@@ -16,6 +16,7 @@ use crate::{
     },
     pages::resolve_keys,
     results::{CheckRecord, StoredCheck, stored_check},
+    scheduled::{ScheduledKind, ScheduledUpdate, take_scheduled},
     secrets::Sealer,
     subscribers,
 };
@@ -70,8 +71,45 @@ impl Store {
         incident: &NewIncident,
         now: Timestamp,
     ) -> Result<Incident> {
+        self.declare(incident, now, None).await
+    }
+
+    /// Declares the incident `scheduled` describes and removes the schedule,
+    /// atomically: [`StoreError::ScheduledNotFound`] if it is already gone.
+    pub async fn declare_scheduled_incident(
+        &self,
+        scheduled: &ScheduledUpdate,
+        now: Timestamp,
+    ) -> Result<Incident> {
+        let ScheduledKind::Declare {
+            title,
+            impact,
+            monitors,
+        } = &scheduled.kind
+        else {
+            return Err(StoreError::ScheduledNotFound(scheduled.id));
+        };
+        let incident = NewIncident {
+            title: title.clone(),
+            impact: *impact,
+            status: scheduled.status,
+            message: scheduled.body.clone(),
+            monitors: monitors.clone(),
+        };
+        self.declare(&incident, now, Some(scheduled.id)).await
+    }
+
+    async fn declare(
+        &self,
+        incident: &NewIncident,
+        now: Timestamp,
+        scheduled: Option<i64>,
+    ) -> Result<Incident> {
         let mut db = self.db();
         let mut tx = self.transaction(&mut db).await?;
+        if let Some(id) = scheduled {
+            take_scheduled(&mut tx, id).await?;
+        }
         let ids = resolve_keys(&mut tx, &incident.monitors).await?;
         let resolved = incident.status == IncidentStatus::Resolved;
         let record = toasty::create!(IncidentRecord {
@@ -142,8 +180,42 @@ impl Store {
         body: &str,
         now: Timestamp,
     ) -> Result<Incident> {
+        self.post_update(id, status, body, now, None).await
+    }
+
+    /// Posts the update `scheduled` describes and removes the schedule,
+    /// atomically: [`StoreError::ScheduledNotFound`] if it is already gone.
+    pub async fn post_scheduled_update(
+        &self,
+        scheduled: &ScheduledUpdate,
+        now: Timestamp,
+    ) -> Result<Incident> {
+        let ScheduledKind::Update { incident_id } = scheduled.kind else {
+            return Err(StoreError::ScheduledNotFound(scheduled.id));
+        };
+        self.post_update(
+            incident_id,
+            scheduled.status,
+            &scheduled.body,
+            now,
+            Some(scheduled.id),
+        )
+        .await
+    }
+
+    async fn post_update(
+        &self,
+        id: i64,
+        status: IncidentStatus,
+        body: &str,
+        now: Timestamp,
+        scheduled: Option<i64>,
+    ) -> Result<Incident> {
         let mut db = self.db();
         let mut tx = self.transaction(&mut db).await?;
+        if let Some(scheduled) = scheduled {
+            take_scheduled(&mut tx, scheduled).await?;
+        }
         let Some(current) = IncidentRecord::filter_by_id(id)
             .first()
             .exec(&mut tx)
@@ -188,12 +260,22 @@ impl Store {
             .ok_or(StoreError::IncidentNotFound(id))
     }
 
+    /// Deletes the incident with its timeline and scheduled updates.
     pub async fn delete_incident(&self, id: i64) -> Result<bool> {
         self.drop_incident_news(id).await?;
+        let mut db = self.db();
+        let mut tx = self.transaction(&mut db).await?;
+        toasty::sql::statement(
+            r#"DELETE FROM "scheduled_incident_updates" WHERE "incident_id" = $1"#,
+        )
+        .bind(id)
+        .exec(&mut tx)
+        .await?;
         let deleted = toasty::sql::statement(r#"DELETE FROM "incidents" WHERE "id" = $1"#)
             .bind(id)
-            .exec(&mut self.db())
+            .exec(&mut tx)
             .await?;
+        tx.commit().await?;
         Ok(deleted > 0)
     }
 
@@ -333,7 +415,7 @@ impl Store {
     }
 
     /// Incidents linked to any of `monitors`.
-    async fn incident_ids_for(&self, monitors: &[MonitorId]) -> Result<Vec<i64>> {
+    pub(crate) async fn incident_ids_for(&self, monitors: &[MonitorId]) -> Result<Vec<i64>> {
         if monitors.is_empty() {
             return Ok(Vec::new());
         }
@@ -354,7 +436,7 @@ impl Store {
     }
 
     /// Public timelines omit internal check diagnostics, newest first.
-    async fn public(&self, records: Vec<IncidentRecord>) -> Result<Vec<Incident>> {
+    pub(crate) async fn public(&self, records: Vec<IncidentRecord>) -> Result<Vec<Incident>> {
         let mut incidents = self.hydrate(records).await?;
         for incident in &mut incidents {
             incident.updates.retain(|update| update.check.is_none());

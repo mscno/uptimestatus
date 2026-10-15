@@ -22,7 +22,7 @@ use crate::{
 const PAGE: u32 = 50;
 
 /// The action families offered as filters.
-const FAMILIES: [&str; 15] = [
+const FAMILIES: [&str; 17] = [
     "auth",
     "bulk",
     "channel",
@@ -34,6 +34,8 @@ const FAMILIES: [&str; 15] = [
     "maintenance",
     "monitor",
     "page",
+    "report",
+    "template",
     "token",
     "uptime",
     "secrets",
@@ -116,6 +118,10 @@ async fn target_link(state: &AppState, target: &AuditTarget) -> Result<Option<St
             .maintenance(id)
             .await?
             .map(|_| format!("/admin/maintenance/{id}")),
+        "template" => store
+            .template(id)
+            .await?
+            .map(|_| format!("/admin/incidents/templates/{id}/edit")),
         "token" => store
             .list_api_tokens()
             .await?

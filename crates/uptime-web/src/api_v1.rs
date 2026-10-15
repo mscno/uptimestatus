@@ -29,7 +29,11 @@ use uptime_domain::{
 };
 use uptime_store::{ApiToken, Monitor, MonitorOverview, NewIncident, StoreError};
 
-use crate::{audit, auth::app};
+use crate::{
+    audit,
+    auth::app,
+    publish::{self, Via},
+};
 
 /// SHA-256 of a token, as stored.
 pub fn hash_token(token: &str) -> [u8; 32] {
@@ -693,13 +697,36 @@ pub(crate) async fn delete_page(cx: &Cx) -> Result<Response> {
 
 #[derive(Deserialize)]
 struct IncidentInput {
+    /// An incident template's name: fills what is not given.
+    #[serde(default)]
+    template: Option<String>,
+    #[serde(default)]
     title: String,
+    #[serde(default)]
     message: String,
     #[serde(default)]
     impact: Option<Impact>,
     #[serde(default)]
     status: Option<IncidentStatus>,
     monitors: Vec<MonitorKey>,
+}
+
+/// The template named `name`, or a 422 reply.
+async fn named_template(
+    cx: &Cx,
+    name: Option<&str>,
+) -> Result<std::result::Result<Option<uptime_domain::IncidentTemplate>, Response>> {
+    let Some(name) = name else {
+        return Ok(Ok(None));
+    };
+    match app(cx).store.template_by_name(name).await? {
+        Some(template) => Ok(Ok(Some(template.spec))),
+        None => Ok(Err(fail(
+            cx,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("no incident template named `{name}`"),
+        )?)),
+    }
 }
 
 #[derive(Serialize)]
@@ -729,6 +756,21 @@ impl From<uptime_store::Incident> for IncidentBody {
 #[route(POST "/api/v1/incidents")]
 pub(crate) async fn create_incident(cx: &Cx, Json(input): Json<IncidentInput>) -> Result<Response> {
     let token = authorized!(cx, TokenScope::Write);
+    let template = match named_template(cx, input.template.as_deref()).await? {
+        Ok(template) => template,
+        Err(reply) => return Ok(reply),
+    };
+    let mut input = input;
+    if let Some(template) = template {
+        if input.title.trim().is_empty() {
+            input.title = template.title;
+        }
+        if input.message.trim().is_empty() {
+            input.message = template.body;
+        }
+        input.impact = input.impact.or(Some(template.impact));
+        input.status = input.status.or(Some(template.status));
+    }
     if input.title.trim().is_empty() || input.message.trim().is_empty() {
         return fail(
             cx,
@@ -751,33 +793,27 @@ pub(crate) async fn create_incident(cx: &Cx, Json(input): Json<IncidentInput>) -
         message: input.message.trim().to_owned(),
         monitors: input.monitors,
     };
-    match state.store.declare_incident(&new, Timestamp::now()).await {
-        Ok(incident) => {
-            state.pages.clear();
-            audit::record(
-                state,
-                audit::api(&token),
-                "incident.declare",
-                audit::target("incident", incident.id),
-                format!("Declared incident {}", new.title),
-                serde_json::json!({
-                    "title": new.title,
-                    "impact": new.impact.as_str(),
-                    "status": new.status.as_str(),
-                    "message": new.message,
-                    "monitors": new.monitors.iter().map(ToString::to_string).collect::<Vec<_>>(),
-                }),
-            )
-            .await?;
-            (StatusCode::CREATED, Json(IncidentBody::from(incident))).into_response(cx)
-        }
+    match publish::declare(
+        state,
+        &audit::api(&token),
+        &new,
+        Via::Direct,
+        Timestamp::now(),
+    )
+    .await?
+    {
+        Ok(incident) => (StatusCode::CREATED, Json(IncidentBody::from(incident))).into_response(cx),
         Err(error) => store_failure(cx, error),
     }
 }
 
 #[derive(Deserialize)]
 struct UpdateInput {
-    status: IncidentStatus,
+    /// An incident template's name: fills what is not given.
+    #[serde(default)]
+    template: Option<String>,
+    #[serde(default)]
+    status: Option<IncidentStatus>,
     #[serde(default)]
     message: Option<String>,
 }
@@ -790,33 +826,35 @@ pub(crate) async fn post_incident_update(
 ) -> Result<Response> {
     let token = authorized!(cx, TokenScope::Write);
     let id = *path_param::<Id>(cx)?;
+    let template = match named_template(cx, input.template.as_deref()).await? {
+        Ok(template) => template,
+        Err(reply) => return Ok(reply),
+    };
+    let Some(status) = input.status.or_else(|| template.as_ref().map(|t| t.status)) else {
+        return fail(
+            cx,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "`status` is required (or name a `template`)",
+        );
+    };
     let message = input
         .message
         .filter(|m| !m.trim().is_empty())
-        .unwrap_or_else(|| format!("Status changed to {}.", input.status.label().to_lowercase()));
+        .or_else(|| template.map(|t| t.body))
+        .unwrap_or_else(|| format!("Status changed to {}.", status.label().to_lowercase()));
     let state = app(cx);
-    match state
-        .store
-        .post_incident_update(id, input.status, &message, Timestamp::now())
-        .await
+    match publish::update(
+        state,
+        &audit::api(&token),
+        id,
+        status,
+        &message,
+        Via::Direct,
+        Timestamp::now(),
+    )
+    .await?
     {
-        Ok(incident) => {
-            state.pages.clear();
-            audit::record(
-                state,
-                audit::api(&token),
-                "incident.update",
-                audit::target("incident", id),
-                format!(
-                    "Posted a {} update to {}",
-                    input.status.label().to_lowercase(),
-                    incident.title
-                ),
-                serde_json::json!({ "status": input.status.as_str(), "message": message }),
-            )
-            .await?;
-            Json(IncidentBody::from(incident)).into_response(cx)
-        }
+        Ok(incident) => Json(IncidentBody::from(incident)).into_response(cx),
         Err(StoreError::IncidentNotFound(_)) => fail(cx, StatusCode::NOT_FOUND, "no such incident"),
         Err(error) => Err(error.into()),
     }

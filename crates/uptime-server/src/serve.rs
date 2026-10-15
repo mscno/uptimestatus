@@ -428,6 +428,14 @@ pub async fn run(
     let state = app_state(config, store, events, prober, services)?
         .with_cluster(cluster)
         .with_page_changes(page_changes);
+    if roles.worker {
+        // Scheduled incident updates publish through the web layer's path, so
+        // status pages, the audit trail and notifications all follow.
+        background.push(tokio::spawn(uptime_web::publish::run_schedules(
+            state.clone(),
+            shutdown.clone(),
+        )));
+    }
     let served = match public {
         Some(public) => serve(state, public, internal, shutdown.clone()).await,
         None => serve_internal(state, internal, shutdown.clone()).await,

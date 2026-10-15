@@ -5,7 +5,7 @@ use uptime_domain::ConfigFile;
 use crate::{Result, Store, StoreError};
 
 impl Store {
-    /// Every monitor and status page, by key and slug.
+    /// Every monitor, status page and incident template, by key, slug and name.
     pub async fn export_config(&self) -> Result<ConfigFile> {
         let mut monitors: Vec<_> = self
             .list_monitors()
@@ -23,6 +23,16 @@ impl Store {
             pages.push(page.spec);
         }
         pages.sort_by(|a, b| a.slug.cmp(&b.slug));
-        Ok(ConfigFile { monitors, pages })
+        let incident_templates = self
+            .list_templates()
+            .await?
+            .into_iter()
+            .map(|t| t.spec)
+            .collect();
+        Ok(ConfigFile {
+            monitors,
+            pages,
+            incident_templates,
+        })
     }
 }

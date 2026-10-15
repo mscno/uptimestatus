@@ -33,6 +33,15 @@ topcoat = { version = "=0.9.0", features = ["datastar", "tower", "multipart"] }
 hickory-resolver = "0.26.3"
 reqwest = { version = "0.13.5", default-features = false }
 rustls = { version = "0.23", default-features = false }
+# Protocol checks (ping, databases, gRPC health, MQTT)
+bytes = "1.12.1"
+hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
+mysql_async = { version = "0.37.1", default-features = false, features = ["minimal-rust", "rustls-tls", "aws-lc-rs", "tls12"] }
+redis = { version = "1.7.1", default-features = false, features = ["aio", "tokio-comp"] }
+rumqttc = { version = "0.25.1", default-features = false }
+surge-ping = "0.9.1"
+tonic = { version = "0.14.6", default-features = false, features = ["channel", "codegen"] }
+tonic-health = { version = "0.14.6", default-features = false }
 
 # Persistence
 toasty = { version = "=0.11.0", features = ["postgresql", "sqlite", "turso-serverless", "jiff", "migration", "serde"] }

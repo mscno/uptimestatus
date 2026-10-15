@@ -2,7 +2,10 @@ use std::time::Duration;
 
 use uptime_domain::{CheckSpec, Observation};
 
-use crate::{AddressPolicy, dns, http::HttpProbe, resolve::PolicyResolver, tcp};
+use crate::{
+    AddressPolicy, database, dns, grpc, http::HttpProbe, mqtt, ping::Pinger,
+    resolve::PolicyResolver, tcp,
+};
 
 /// Settings shared by every probe.
 #[derive(Clone, Debug)]
@@ -43,16 +46,22 @@ pub struct Prober {
     resolver: PolicyResolver,
     http: HttpProbe,
     dns_port: u16,
+    ping: Pinger,
 }
 
 impl Prober {
     pub fn new(config: ProberConfig) -> Result<Self, SetupError> {
+        // Clients that build their own TLS config (the MySQL driver) use the
+        // process default, which rustls cannot pick when more than one
+        // provider is compiled in. Another one installed first is fine too.
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let resolver = PolicyResolver::new(config.policy)?;
         let http = HttpProbe::new(resolver.clone(), config.user_agent, config.max_body_bytes);
         Ok(Self {
             resolver,
             http,
             dns_port: config.dns_port,
+            ping: Pinger::default(),
         })
     }
 
@@ -95,6 +104,10 @@ impl Prober {
             CheckSpec::Dns(dns) => {
                 dns::probe(self.resolver.policy(), self.dns_port, dns, timeout).await
             }
+            CheckSpec::Ping(ping) => self.ping.probe(&self.resolver, ping, timeout).await,
+            CheckSpec::Database(db) => database::probe(&self.resolver, db, timeout).await,
+            CheckSpec::Grpc(grpc) => grpc::probe(&self.resolver, grpc, timeout).await,
+            CheckSpec::Mqtt(mqtt) => mqtt::probe(&self.resolver, mqtt, timeout).await,
             // Push monitors are judged from their heartbeats by the scheduler.
             CheckSpec::Push(_) => Observation::Failed {
                 kind: uptime_domain::FailureKind::Io,

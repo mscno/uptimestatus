@@ -26,7 +26,57 @@ use crate::resolve::{PolicyResolver, ResolveError};
 /// The most reply bytes read while looking for the expected text.
 const MAX_REPLY: usize = 4096;
 
-type Failure = (FailureKind, String);
+/// Why a probe got no answer, as reported in [`Observation::Failed`].
+pub(crate) type Failure = (FailureKind, String);
+
+/// Connects to the first permitted address of `host` that accepts.
+pub(crate) async fn connect(
+    resolver: &PolicyResolver,
+    host: &str,
+    port: u16,
+) -> Result<TcpStream, Failure> {
+    let addresses = resolver.resolve(host).await.map_err(resolve_failure)?;
+    let mut last_error = None;
+    for ip in addresses {
+        match TcpStream::connect((ip, port)).await {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.map_or_else(
+        || (FailureKind::Io, "no address to connect to".to_owned()),
+        io_failure,
+    ))
+}
+
+pub(crate) fn resolve_failure(error: ResolveError) -> Failure {
+    match &error {
+        ResolveError::Blocked { .. } => (FailureKind::Blocked, error.to_string()),
+        ResolveError::Lookup { .. } => (FailureKind::Dns, error.to_string()),
+    }
+}
+
+/// Wraps `stream` in TLS for `host` (SNI and certificate name).
+pub(crate) async fn tls_connect(
+    stream: TcpStream,
+    host: &str,
+    ignore_errors: bool,
+    alpn: &[&[u8]],
+) -> Result<tokio_rustls::client::TlsStream<TcpStream>, Failure> {
+    let config = if alpn.is_empty() {
+        tls_config(ignore_errors)?
+    } else {
+        let mut config = (*tls_config(ignore_errors)?).clone();
+        config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
+        Arc::new(config)
+    };
+    let name = ServerName::try_from(host.to_owned())
+        .map_err(|e| (FailureKind::Tls, format!("invalid server name: {e}")))?;
+    TlsConnector::from(config)
+        .connect(name, stream)
+        .await
+        .map_err(|e| (FailureKind::Tls, format!("TLS handshake failed: {e}")))
+}
 
 pub(crate) async fn probe(
     resolver: &PolicyResolver,
@@ -36,30 +86,7 @@ pub(crate) async fn probe(
     let started = Instant::now();
     let deadline = TokioInstant::now() + timeout;
     let attempt = async {
-        let addresses = resolver
-            .resolve(&check.host)
-            .await
-            .map_err(|error| match &error {
-                ResolveError::Blocked { .. } => (FailureKind::Blocked, error.to_string()),
-                ResolveError::Lookup { .. } => (FailureKind::Dns, error.to_string()),
-            })?;
-        let mut last_error = None;
-        let mut stream = None;
-        for ip in addresses {
-            match TcpStream::connect((ip, check.port)).await {
-                Ok(connected) => {
-                    stream = Some(connected);
-                    break;
-                }
-                Err(error) => last_error = Some(error),
-            }
-        }
-        let Some(stream) = stream else {
-            return Err(last_error.map_or_else(
-                || (FailureKind::Io, "no address to connect to".to_owned()),
-                io_failure,
-            ));
-        };
+        let stream = connect(resolver, &check.host, check.port).await?;
         if !check.tls && check.send.is_none() && check.expect.is_none() {
             return Ok(Session {
                 latency: started.elapsed(),
@@ -112,13 +139,7 @@ async fn converse(
             cert_expires_at: None,
         });
     }
-    let config = tls_config(check.ignore_tls_errors)?;
-    let name = ServerName::try_from(check.host.clone())
-        .map_err(|e| (FailureKind::Tls, format!("invalid server name: {e}")))?;
-    let tls = TlsConnector::from(config)
-        .connect(name, stream)
-        .await
-        .map_err(|e| (FailureKind::Tls, format!("TLS handshake failed: {e}")))?;
+    let tls = tls_connect(stream, &check.host, check.ignore_tls_errors, &[]).await?;
     let cert_expires_at = tls
         .get_ref()
         .1
@@ -186,7 +207,7 @@ fn provider() -> Arc<CryptoProvider> {
 
 /// Client configs are built once: the platform verifier loads the system's
 /// trust store.
-fn tls_config(ignore_errors: bool) -> Result<Arc<ClientConfig>, Failure> {
+pub(crate) fn tls_config(ignore_errors: bool) -> Result<Arc<ClientConfig>, Failure> {
     static STRICT: OnceLock<Result<Arc<ClientConfig>, String>> = OnceLock::new();
     static LENIENT: OnceLock<Result<Arc<ClientConfig>, String>> = OnceLock::new();
     let cell = if ignore_errors { &LENIENT } else { &STRICT };
@@ -261,7 +282,7 @@ impl ServerCertVerifier for AcceptAnyCertificate {
     }
 }
 
-fn io_failure(error: io::Error) -> Failure {
+pub(crate) fn io_failure(error: io::Error) -> Failure {
     let kind = match error.kind() {
         io::ErrorKind::ConnectionRefused | io::ErrorKind::ConnectionReset => FailureKind::Refused,
         io::ErrorKind::TimedOut => FailureKind::Timeout,

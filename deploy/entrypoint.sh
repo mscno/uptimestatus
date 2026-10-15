@@ -4,6 +4,10 @@
 # fresh volume is owned by root.
 set -eu
 if [ "$(id -u)" = 0 ]; then
+  # Ping monitors need unprivileged ICMP sockets. A VM (Fly Machines) lets
+  # root allow them; a container's /proc/sys is usually read-only, so this may
+  # fail harmlessly (Docker already allows them). The setting covers ICMPv6 too.
+  echo "0 2147483647" > /proc/sys/net/ipv4/ping_group_range 2>/dev/null || true
   if [ -d /data ]; then
     chown app:app /data
   fi

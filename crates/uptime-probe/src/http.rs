@@ -13,7 +13,7 @@ use uptime_domain::{FailureKind, HttpAuth, HttpCheck, Observation};
 use url::{Host, Url};
 
 use crate::{
-    AddressPolicy, SetupError,
+    AddressPolicy, SetupError, excerpt,
     resolve::{PolicyResolver, ResolveError},
 };
 
@@ -222,15 +222,6 @@ async fn read_body(
         }
     }
     (String::from_utf8_lossy(&body).into_owned(), failure)
-}
-
-fn excerpt(mut text: String) -> String {
-    let mut end = text.len().min(4096);
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    text.truncate(end);
-    text
 }
 
 fn failed(kind: FailureKind, message: String) -> Observation {

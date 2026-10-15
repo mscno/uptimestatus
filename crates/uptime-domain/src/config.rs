@@ -36,8 +36,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        CheckPolicy, CheckSpec, ComponentSpec, DnsCheck, DnsRecordType, HttpCheck, PushCheck,
-        SectionSpec, TcpCheck, Theme,
+        CheckPolicy, CheckSpec, ComponentSpec, DatabaseCheck, DnsCheck, DnsRecordType, GrpcCheck,
+        HttpCheck, MqttCheck, PingCheck, PushCheck, SectionSpec, TcpCheck, Theme,
     };
 
     fn monitor(key: &str, check: CheckSpec) -> MonitorSpec {
@@ -84,6 +84,37 @@ mod tests {
                         token: "abcdefghijklmnopqrstuvwx".into(),
                     }),
                 ),
+                monitor(
+                    "edge",
+                    CheckSpec::Ping(PingCheck {
+                        packet_timeout: Duration::from_millis(500),
+                        ..PingCheck::host("edge.example.com")
+                    }),
+                ),
+                monitor(
+                    "jobs",
+                    CheckSpec::Database(DatabaseCheck {
+                        query: Some("SELECT count(*) FROM jobs".into()),
+                        expect: Some("0".into()),
+                        ..DatabaseCheck::url("postgres://monitor:pw@db.example.com/app")
+                    }),
+                ),
+                monitor(
+                    "users",
+                    CheckSpec::Grpc(GrpcCheck {
+                        service: Some("api.v1.Users".into()),
+                        metadata: vec![("authorization".into(), "Bearer t".into())],
+                        ..GrpcCheck::new("https://grpc.example.com".parse().unwrap())
+                    }),
+                ),
+                monitor(
+                    "broker",
+                    CheckSpec::Mqtt(MqttCheck {
+                        tls: true,
+                        topic: Some("health".into()),
+                        ..MqttCheck::connect("broker.example.com")
+                    }),
+                ),
             ],
             pages: vec![PageSpec {
                 slug: "platform".parse().unwrap(),
@@ -122,7 +153,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains(r#"interval = "1m""#),
+            text.contains(r#"interval = "1m""#) && text.contains(r#"packet_timeout = "500ms""#),
             "durations stay human: {text}"
         );
         assert_eq!(ConfigFile::from_toml(&text).unwrap(), file());

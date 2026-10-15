@@ -1,6 +1,6 @@
 [package]
 name = "uptime-probe"
-description = "Executes checks (HTTP, TCP) and reports raw observations, enforcing the address policy."
+description = "Executes checks (HTTP, TCP, DNS, ping, databases, gRPC health, MQTT) and reports raw observations, enforcing the address policy."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,14 +9,27 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+bytes.workspace = true
+getrandom.workspace = true
 hickory-resolver.workspace = true
+hyper-util.workspace = true
 jiff.workspace = true
+mysql_async.workspace = true
+redis.workspace = true
 reqwest = { workspace = true, features = ["rustls", "http2"] }
+rumqttc.workspace = true
 rustls = { workspace = true, features = ["aws_lc_rs", "std"] }
 rustls-platform-verifier.workspace = true
+surge-ping.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "time"] }
+tokio-postgres.workspace = true
+tokio-postgres-rustls.workspace = true
 tokio-rustls = { workspace = true, features = ["aws_lc_rs"] }
+tokio-util.workspace = true
+tonic.workspace = true
+tonic-health.workspace = true
+tower.workspace = true
 tracing.workspace = true
 uptime-domain.workspace = true
 url.workspace = true
@@ -29,6 +42,8 @@ rstest.workspace = true
 rustls = { workspace = true, features = ["aws_lc_rs"] }
 tokio = { workspace = true, features = ["io-util"] }
 tokio-rustls = { workspace = true, features = ["aws_lc_rs"] }
+# A gRPC health server to probe.
+tonic = { workspace = true, features = ["server", "router"] }
 wiremock.workspace = true
 
 [lints]

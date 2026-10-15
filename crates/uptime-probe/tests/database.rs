@@ -86,8 +86,8 @@ async fn postgres_queries_report_their_first_value() {
 async fn postgres_failures_explain_themselves_without_secrets() {
     let db = TestDb::new().await;
     let base = format!("{}?sslmode=disable", db.url().split('?').next().unwrap());
-    // Local test servers often trust loopback, so a missing database stands
-    // in for a refused login.
+    // A wrong password with a missing database: servers that trust loopback
+    // report the database (3D000), others refuse the login (28P01).
     let mut missing: url::Url = with_password(&base, "s3cr3t").parse().unwrap();
     missing.set_path("/no_such_database");
     let (kind, message) = failed(
@@ -98,7 +98,10 @@ async fn postgres_failures_explain_themselves_without_secrets() {
         .await,
     );
     assert_eq!(kind, FailureKind::Io);
-    assert!(message.contains("3D000"), "{message}");
+    assert!(
+        message.contains("3D000") || message.contains("28P01"),
+        "{message}"
+    );
     assert!(!message.contains("s3cr3t"), "{message}");
 
     let (kind, message) = failed(

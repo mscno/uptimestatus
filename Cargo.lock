@@ -6152,6 +6152,7 @@ dependencies = [
  "jiff",
  "pretty_assertions",
  "reqwest",
+ "serde_json",
  "thiserror",
  "tokio",
  "tokio-util",

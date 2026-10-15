@@ -43,6 +43,7 @@ impl Janitor {
         let cutoff = now.checked_sub(retention).unwrap_or(now);
         let pruned = self.store.prune_checks_before(cutoff, Self::BATCH).await?;
         self.store.prune_deliveries_before(cutoff).await?;
+        self.store.prune_subscriber_messages_before(cutoff).await?;
         let sessions = self.store.prune_sessions(now).await?;
         if sessions > 0 {
             tracing::info!(sessions, "pruned expired sessions");

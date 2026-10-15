@@ -12,6 +12,7 @@ repository.workspace = true
 futures-util.workspace = true
 jiff.workspace = true
 reqwest = { workspace = true, features = ["rustls"] }
+serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
 tokio-util.workspace = true

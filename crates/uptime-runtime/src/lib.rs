@@ -1,5 +1,6 @@
 //! Background work: the check scheduler, the event bus, the dead-man heartbeat,
-//! the retention janitor and custom-domain verification.
+//! the retention janitor, custom-domain verification, and delivery of alerts
+//! and status page subscribers' messages.
 
 mod cluster;
 mod domains;
@@ -9,6 +10,7 @@ pub mod notifier;
 mod probe;
 pub mod schedule;
 mod scheduler;
+pub mod subscriptions;
 
 pub use cluster::{Cluster, Handlers, Reload, apply as apply_bus_message};
 pub use domains::{
@@ -19,3 +21,4 @@ pub use janitor::Janitor;
 pub use notifier::{Deliver, Notifier, NotifierConfig};
 pub use probe::Probe;
 pub use scheduler::{Clock, Scheduler, SchedulerConfig, system_clock};
+pub use subscriptions::Courier;

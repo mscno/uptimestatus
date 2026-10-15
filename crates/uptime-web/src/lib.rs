@@ -21,6 +21,7 @@ pub mod media;
 mod metrics;
 mod pages;
 pub mod publish;
+mod reports;
 mod state;
 mod status;
 mod views;
@@ -157,6 +158,8 @@ fn topcoat_router(state: &AppState) -> topcoat::router::Router {
         .page(status::maintenance_page)
         .page(status::incidents_page)
         .page(status::incident_page)
+        .page(status::reports_page)
+        .route(status::month_report)
         .route(status::status_body_patch)
         .route(status::summary_json)
         .route(status::status_feed)
@@ -248,6 +251,10 @@ fn topcoat_router(state: &AppState) -> topcoat::router::Router {
         .route(admin::delete_channel)
         .route(admin::test_channel)
         .page(admin::incidents_page)
+        .route(admin::reports_page)
+        .route(admin::save_report_settings)
+        .route(admin::create_report_link)
+        .route(admin::revoke_report_link)
         .page(admin::templates_page)
         .page(admin::new_template)
         .route(admin::create_template)

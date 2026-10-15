@@ -27,10 +27,14 @@ or a Docker container, with SQLite, PostgreSQL or Turso for storage.
   delays.
 - Status page subscriptions by email or webhook, with double opt-in, branded emails sent from
   the page's own domain, and per-component choices; see [Email and subscriptions](#email-and-subscriptions).
+- Incident templates with placeholders, and declarations and updates scheduled for later;
+  see [Incidents](#incidents).
+- Monthly SLA uptime reports per status page, as web pages and branded PDFs, public or
+  shared by link; see [Monthly reports](#monthly-reports).
 - TLS certificate-expiry warnings and one-off or recurring maintenance windows.
 - A live admin console with GitHub sign-in, tags, groups, search, bulk actions and "Test now".
   Status pages and the console update over SSE when checks finish.
-- A [JSON API](#json-api) and TOML import/export for monitors and pages.
+- A [JSON API](#json-api) and TOML import/export for monitors, pages and incident templates.
 
 ## Quick start
 
@@ -73,8 +77,8 @@ see credentials (auth secrets, credential-looking headers, push tokens) redacted
 | `GET`, `PUT`, `DELETE /api/v1/pages/{slug}` | read / write | Status pages (`section` layout as in the TOML) |
 | `GET /api/v1/pages/{slug}/components` | read | Components with their manual status or override, when and by whom it was set, and the note |
 | `PUT /api/v1/pages/{slug}/components/{key}/status` | write | `{"status": "degraded", "note": "…"}`: a manual component's status, or a monitor component's override; `{"status": null}` clears an override |
-| `POST /api/v1/incidents` | write | `{"title", "message", "impact", "status", "monitors": ["key"]}` |
-| `POST /api/v1/incidents/{id}/updates` | write | `{"status", "message"}` |
+| `POST /api/v1/incidents` | write | `{"title", "message", "impact", "status", "monitors": ["key"]}`; `"template": "name"` fills what is not given |
+| `POST /api/v1/incidents/{id}/updates` | write | `{"status", "message"}`; `"template": "name"` fills what is not given |
 
 ```sh
 curl -X PUT https://status.example.com/api/v1/monitors/api \
@@ -416,6 +420,50 @@ the left-hand text. They work on custom domains too (`/badge.svg`, `/badge/{key}
 cached for a minute with ETags, and exist only for components on a page: other keys are a
 404, and drafts show badges only to signed-in admins.
 
+### Incidents
+
+**Templates** (**Incidents → Templates**, or `[[incident_template]]` in TOML with `name`,
+`title`, `impact`, `status` and `body`) hold wording you reuse. Pick one above the declare
+form or an incident's update form to fill it in, or name it as `"template"` in the API.
+Placeholders are filled in when the incident is published: `{monitor}` (the first affected
+monitor's name), `{monitors}` (all of them), `{page}` (the status pages showing it) and
+`{started_at}` (when it started, UTC). Other text in braces is left as written.
+
+**Scheduling:** give a declaration or an update a **Publish at** time (UTC) to publish it
+later; choose *Resolved* to schedule the resolution. Scheduled items show in the console
+(declarations on the Incidents page, updates on their incident) where they can be edited or
+cancelled, and are invisible on status pages until they publish. The worker publishes them
+within about 15 seconds of their time, through the same path as a manual update: status
+pages refresh, subscribers are notified then (not when it was scheduled), and the audit
+trail names the admin who scheduled it. Publishing removes the schedule in the same
+transaction, so an item is never published twice, even with several workers. If publishing
+fails (say, its monitors were deleted) it waits with the error until edited.
+
+### Monthly reports
+
+Every status page has monthly SLA uptime reports: `/s/{slug}/reports` lists the months with
+history, `/s/{slug}/reports/2026-09` shows one (month to date for the current month), and
+`/s/{slug}/reports/2026-09.pdf` is the same report as a branded PDF (the page's title, logo,
+accent and look). Reports cover each component's uptime, downtime and maintenance time, a bar
+per day, the incidents and maintenance windows of the month and an overall figure (the mean of
+the components). They count what status pages count: checks, manual statuses and overrides,
+with maintenance left out and excused checks counted as up; a report says how many failed
+checks an administrator excused that month. Downtime is the observed time in proportion to
+the down checks, so for checked components it is an estimate at the check interval.
+
+Under **Status pages → Reports** admins choose who may read them and set an optional
+**uptime target** (e.g. `99.9`), which reports mark as met or missed per component:
+
+- **Public** (default): a **Reports** tab on the published page; also on custom domains.
+- **Private:** only signed-in admins, and **report links**: `…/reports?key=rpt_…` (every
+  month) or `…/reports/2026-09?key=rpt_…` (one month), with an optional expiry. A link is
+  shown once; only its hash is stored. Revoke links from the same page; creating and revoking
+  them is audited.
+
+PDFs are typeset in-process with [Typst](https://typst.app) and the fonts embedded in the
+binary (no network access); rendering takes milliseconds and a few dozen MB. Rendered PDFs
+are cached by their content, so corrections (excusing checks, editing incidents) show at once.
+
 ## Deploying
 
 - **Docker:** `docker build -t uptimestatus .` (or the `ghcr.io` image published for version
@@ -507,6 +555,7 @@ This project depends on the work of many other open-source maintainers. In parti
 | [Reqwest](https://github.com/seanmonstar/reqwest), [Rustls](https://github.com/rustls/rustls) and [Hickory DNS](https://github.com/hickory-dns/hickory-dns) | HTTP requests, TLS and DNS checks. |
 | [Jiff](https://github.com/BurntSushi/jiff) and [Serde](https://github.com/serde-rs/serde) | Time handling and serialization. |
 | [Figment](https://github.com/SergioBenitez/Figment), [Clap](https://github.com/clap-rs/clap) and [Tracing](https://github.com/tokio-rs/tracing) | Configuration, command-line parsing and logs. |
+| [Typst](https://github.com/typst/typst) | Typesetting the PDF reports. |
 | [Wiremock](https://github.com/LukeMathWalker/wiremock-rs) and [rcgen](https://github.com/rustls/rcgen) | HTTP fixtures and certificates for integration tests. |
 
 The monitoring policies take inspiration from [Uptime Kuma](https://github.com/louislam/uptime-kuma).
@@ -526,5 +575,7 @@ Vendored assets include:
 - **Pixelify Sans** and **JetBrains Mono** under the SIL Open Font License:
   [Pixelify Sans license](crates/uptime-web/static/starbase/fonts/OFL-PixelifySans.txt),
   [JetBrains Mono license](crates/uptime-web/static/starbase/fonts/OFL-JetBrainsMono.txt).
+- **IBM Plex Sans** under the SIL Open Font License, with TrueType copies of Pixelify Sans
+  and JetBrains Mono, embedded for PDF reports: [fonts and sources](crates/uptime-web/src/reports/fonts/README.md).
 - **Prism**, used by Starbase's code editor, under MIT:
   [license](crates/uptime-web/static/starbase/c/code-editor/vendor/LICENSE-prism.txt).

@@ -7,6 +7,7 @@
 mod badge;
 mod feed;
 mod history;
+mod reports;
 pub(crate) mod subscribe;
 
 use std::{
@@ -47,6 +48,7 @@ use tokio::sync::broadcast::error::RecvError;
 pub(crate) use badge::{page_badge, response_badge, status_badge, uptime_badge};
 pub(crate) use feed::status_feed;
 pub(crate) use history::{incident_page, incidents_page, maintenance_page};
+pub(crate) use reports::{month_report, reports_page};
 pub(crate) use subscribe::{
     confirm, confirm_page, manage_page, rotate_secret, save_subscription, subscribe_email,
     subscribe_page, subscribe_webhook, unsubscribe, unsubscribe_page,
@@ -92,6 +94,8 @@ pub(crate) struct StatusView {
     custom_css: Option<(Arc<str>, String)>,
     /// Visitors may subscribe (email is configured and the page allows it).
     subscriptions: bool,
+    /// Monthly reports are public with the page (a "Reports" tab).
+    reports: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -179,19 +183,24 @@ impl PageCache {
 
 /// Loads (or reuses) the page, hiding drafts from everyone but admins.
 async fn load(cx: &Cx, slug: &str) -> Result<Arc<StatusView>> {
+    let view = load_draft(cx, slug).await?;
+    if !view.published && current_admin(cx).await?.is_none() {
+        return Err(not_found().into());
+    }
+    Ok(view)
+}
+
+/// Loads (or reuses) the page, drafts included: callers decide who sees it.
+async fn load_draft(cx: &Cx, slug: &str) -> Result<Arc<StatusView>> {
     let state = app(cx);
-    let view = match state.pages.get(slug) {
+    Ok(match state.pages.get(slug) {
         Some(view) => view,
         None => {
             let view = Arc::new(build(&state.store, slug).await?.ok_or_else(not_found)?);
             state.pages.put(view.clone());
             view
         }
-    };
-    if !view.published && current_admin(cx).await?.is_none() {
-        return Err(not_found().into());
-    }
-    Ok(view)
+    })
 }
 
 async fn build(store: &Store, slug: &str) -> Result<Option<StatusView>> {
@@ -389,9 +398,11 @@ async fn build(store: &Store, slug: &str) -> Result<Option<StatusView>> {
         .or_else(|| logo.clone());
     let subscriptions =
         store.subscriptions_enabled() && store.email_settings(page.id).await?.subscriptions;
+    let reports = !store.report_settings(page.id).await?.private;
     Ok(Some(StatusView {
         page_id: page.id,
         subscriptions,
+        reports,
         slug: page.spec.slug.to_string(),
         title: page.spec.title,
         description: page.spec.description,
@@ -509,6 +520,7 @@ pub(crate) enum Tab {
     Status,
     Maintenance,
     Incidents,
+    Reports,
     /// Subscribing and managing a subscription (no tab of its own).
     Subscribe,
 }
@@ -566,7 +578,7 @@ async fn frame(
         .as_ref()
         .map(|(_, version)| format!("{base}/custom.css?v={version}"))
         .unwrap_or_default();
-    let tabs = [
+    let mut tabs = vec![
         (Tab::Status, "Status", home(base).to_owned()),
         (
             Tab::Maintenance,
@@ -579,6 +591,9 @@ async fn frame(
             format!("{base}/incidents"),
         ),
     ];
+    if view.reports && view.published {
+        tabs.push((Tab::Reports, "Reports", format!("{base}/reports")));
+    }
     Ok(view! {
         document(title: title, theme: theme, accent: &accent, icon: &icon,
             look: if clean { "clean" } else { "" },

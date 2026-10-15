@@ -16,6 +16,9 @@ getrandom.workspace = true
 sha2.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
 tokio-util.workspace = true
+typst.workspace = true
+typst-pdf.workspace = true
+typst-layout.workspace = true
 humantime.workspace = true
 include_dir.workspace = true
 jiff.workspace = true

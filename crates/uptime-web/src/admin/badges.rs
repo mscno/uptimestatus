@@ -19,7 +19,7 @@ pub(crate) struct Badge {
 
 /// Where visitors reach a page: its verified custom domain, else `/s/{slug}`
 /// on the app. Also returns the page's path prefix there.
-async fn public_base(state: &AppState, page: &Page) -> Result<String> {
+pub(super) async fn public_base(state: &AppState, page: &Page) -> Result<String> {
     let domain = state
         .store
         .domains_for_page(page.id)

@@ -71,3 +71,11 @@ components = [
   # A manual component: no monitor; set its status in the console or the API.
   { manual = "email", label = "Email delivery", description = "Transactional email" },
 ]
+
+# Reusable incident wording; placeholders are filled in when published.
+[[incident_template]]
+name = "Degraded performance"
+title = "{monitor} is slower than usual"
+impact = "minor"
+status = "investigating"
+body = "We are looking into slow responses from {monitors}."

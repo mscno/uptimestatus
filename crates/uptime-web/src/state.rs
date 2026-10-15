@@ -39,6 +39,8 @@ pub struct AppState {
     pub media: Option<MediaStore>,
     /// Status pages changed without a check (open pages refresh at once).
     pub page_changes: PageChanges,
+    /// Rendered monthly report PDFs.
+    pub reports: crate::reports::PdfCache,
     /// Verifies Lettermint's webhook (bounces, complaints). `None` disables it.
     pub lettermint_webhook_secret: Option<String>,
     /// Rate limits for public subscribe forms.
@@ -69,6 +71,7 @@ impl AppState {
             scheduler: None,
             pages: PageCache::default(),
             page_changes: PageChanges::default(),
+            reports: crate::reports::PdfCache::default(),
         }
     }
 

@@ -11,7 +11,9 @@ or a Docker container, with SQLite, PostgreSQL or Turso for storage.
 - HTTP(S), TCP, DNS, push heartbeat, ICMP ping, database (PostgreSQL, MySQL/MariaDB, Redis),
   gRPC health and MQTT monitors, with configurable timeouts and retries. HTTP checks support
   status ranges, keywords, JSON assertions, custom requests and auth; TCP checks can use TLS and
-  send/expect rules. See [Protocol checks](#protocol-checks).
+  send/expect rules. See [Protocol checks](#protocol-checks). Group monitors follow the
+  monitors in a folder, with their own alerts, incidents and uptime; see
+  [Group monitors](#group-monitors).
 - Automatic incidents after the original check and all configured retries fail, with at least
   two failed attempts. Monitors retry once by default. Checks continue at the retry interval
   while down, returning to the normal interval on recovery. Recovery resolves the incident;
@@ -210,7 +212,7 @@ of the worker role in a process.
 
 Monitors and pages can be created in the console, through the [JSON API](#json-api), or from
 TOML (`seed`/`export`): `[[monitor]]` tables with a `check` (`type = "http"`, `"tcp"`, `"dns"`,
-`"push"`, `"ping"`, `"database"`, `"grpc"` or `"mqtt"`) and an optional `policy` (`interval`, `retries`, `retry_interval`, `timeout`,
+`"push"`, `"ping"`, `"database"`, `"grpc"`, `"mqtt"` or `"group"`) and an optional `policy` (`interval`, `retries`, `retry_interval`, `timeout`,
 `invert`, `degraded_after`, `resend_every`), and `[[page]]` tables with `[[page.section]]`s. Pages can be styled with `accent` (a hex
 color), `theme` (`auto`, `light`, `dark`) and `look` (`pixel`, the 8-bit default, or `clean`:
 plain fonts and no starfield); the same options are in the page editor.
@@ -268,6 +270,36 @@ expect = "online"
   service, is DOWN.
 - **MQTT** speaks 3.1.1. A refused CONNECT reports the broker's reason (e.g. bad username or
   password); a topic with no message before the timeout is DOWN.
+
+### Group monitors
+
+A group monitor summarises a folder: every monitor whose group is the path or below it,
+including nested group monitors. It probes nothing; it judges its members' current states, so
+it alerts, opens and resolves automatic incidents and keeps uptime history like any monitor,
+and it can be a single component on a status page.
+
+```toml
+[[monitor]]
+key = "platform"
+name = "Platform"
+check = { type = "group", path = "prod", mode = "any", show_members = true }
+policy = { retries = 0 }    # members already confirm their own failures
+```
+
+- `mode = "any"` (default): DOWN when any member is DOWN, DEGRADED while any member is
+  degraded or failing unconfirmed (pending). `mode = "all"`: DOWN only when every member is
+  DOWN, DEGRADED while some are.
+- Paused and never-checked members do not count, nor do members in maintenance unless all
+  are (then the group is in maintenance). With nothing to judge the group is UNKNOWN and
+  records no check, so its uptime is unaffected.
+- Groups are judged after the other checks claimed at the same moment (deepest folder first),
+  and a member changing state makes its groups due at once, so they follow without waiting
+  for their own interval.
+- Group monitors cannot include each other: a group summarising the folder another group sits
+  in, while that group summarises this one's folder, is refused. A group in its own folder
+  simply skips itself.
+- `show_members` lists the members' names and states under the group on status pages (never
+  their targets).
 
 ## Deploying
 

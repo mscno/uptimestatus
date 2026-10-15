@@ -120,6 +120,8 @@ struct ComponentView {
     uptime: Option<f64>,
     bars: Vec<(Date, BarLevel, Option<f64>)>,
     metrics: Metrics,
+    /// A group monitor's members (name and state), when it lists them.
+    members: Vec<(String, MonitorState)>,
 }
 
 /// A built page and when it was built.
@@ -180,6 +182,19 @@ async fn build(store: &Store, slug: &str) -> Result<Option<StatusView>> {
         .iter()
         .map(|o| (o.monitor.spec.key.as_str(), o))
         .collect();
+    let everyone: Vec<uptime_domain::Member<'_>> = overviews
+        .iter()
+        .map(uptime_store::MonitorOverview::as_member)
+        .collect();
+    let members_of = |overview: &uptime_store::MonitorOverview| match &overview.monitor.spec.check {
+        uptime_domain::CheckSpec::Group(group) if group.show_members => {
+            uptime_domain::group::members(&overview.as_member(), &everyone)
+                .into_iter()
+                .map(|m| (m.name.to_owned(), m.state))
+                .collect()
+        }
+        _ => Vec::new(),
+    };
     let ids: Vec<_> = page
         .spec
         .monitor_keys()
@@ -241,6 +256,7 @@ async fn build(store: &Store, slug: &str) -> Result<Option<StatusView>> {
                         state,
                         uptime: total.uptime(),
                         bars,
+                        members: members_of(overview),
                     })
                 })
                 .collect(),
@@ -549,6 +565,16 @@ async fn status_body(view: &StatusView, base: &str) -> Result<impl View> {
                             </div>
                             <div class="bar-legend"><span>"90 days ago"</span><span>"Today"</span></div>
                             uptime_windows(windows: &component.metrics.windows)
+                            if !component.members.is_empty() {
+                                <details class="component-members">
+                                    <summary class="small muted">(format!("{} services", component.members.len()))</summary>
+                                    <ul class="members">
+                                        for (name, state) in &component.members {
+                                            <li><span>(name.as_str())</span> state_pill(state: *state)</li>
+                                        }
+                                    </ul>
+                                </details>
+                            }
                             if component.metrics.svg.is_some() {
                                 <details class="component-latency">
                                     <summary class="small muted">"Response time, last 24 hours"</summary>

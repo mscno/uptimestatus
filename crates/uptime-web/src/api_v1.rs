@@ -252,7 +252,13 @@ pub(crate) async fn put_monitor(cx: &Cx, Json(body): Json<Value>) -> Result<Resp
     let (status, id) = match find(cx, key).await? {
         Some(existing) => {
             let id = existing.monitor.id;
-            state.store.update_monitor(id, &spec, now).await?;
+            match state.store.update_monitor(id, &spec, now).await {
+                Ok(_) => {}
+                Err(error @ StoreError::GroupCycle(_)) => {
+                    return fail(cx, StatusCode::UNPROCESSABLE_ENTITY, error.to_string());
+                }
+                Err(error) => return Err(error.into()),
+            }
             let before = existing.monitor.spec;
             let details = audit::changes(&before, &spec, &before.redacted(), &spec.redacted());
             audit::record(
@@ -287,6 +293,9 @@ pub(crate) async fn put_monitor(cx: &Cx, Json(body): Json<Value>) -> Result<Resp
                 }
                 Err(StoreError::DuplicateKey(_)) => {
                     return fail(cx, StatusCode::CONFLICT, "a monitor with this key exists");
+                }
+                Err(error @ StoreError::GroupCycle(_)) => {
+                    return fail(cx, StatusCode::UNPROCESSABLE_ENTITY, error.to_string());
                 }
                 Err(error) => return Err(error.into()),
             }

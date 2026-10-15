@@ -1178,6 +1178,21 @@
 		margin-top: var(--sb-space-3);
 	}
 
+	.component-members .members {
+		list-style: none;
+		margin: var(--sb-space-2) 0 0;
+		padding: 0;
+	}
+
+	.component-members .members li {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: var(--sb-space-3);
+		padding: var(--sb-space-1) 0;
+		border-top: 1px solid var(--sb-border-subtle);
+	}
+
 	.component-head {
 		display: flex;
 		align-items: center;

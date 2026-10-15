@@ -39,6 +39,9 @@ pub enum StoreError {
     #[error("custom domain {0} not found")]
     DomainNotFound(i64),
 
+    #[error("group monitors would include each other: {}", .0.join(", "))]
+    GroupCycle(Vec<String>),
+
     #[error("no monitors with the keys {}", .0.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))]
     UnknownMonitors(Vec<MonitorKey>),
 

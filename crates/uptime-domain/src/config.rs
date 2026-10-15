@@ -36,8 +36,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        CheckPolicy, CheckSpec, ComponentSpec, DatabaseCheck, DnsCheck, DnsRecordType, GrpcCheck,
-        HttpCheck, MqttCheck, PingCheck, PushCheck, SectionSpec, TcpCheck, Theme,
+        CheckPolicy, CheckSpec, ComponentSpec, DatabaseCheck, DnsCheck, DnsRecordType, GroupCheck,
+        GroupMode, GrpcCheck, HttpCheck, MqttCheck, PingCheck, PushCheck, SectionSpec, TcpCheck,
+        Theme,
     };
 
     fn monitor(key: &str, check: CheckSpec) -> MonitorSpec {
@@ -115,6 +116,14 @@ mod tests {
                         ..MqttCheck::connect("broker.example.com")
                     }),
                 ),
+                monitor(
+                    "platform",
+                    CheckSpec::Group(GroupCheck {
+                        path: "prod/eu".into(),
+                        mode: GroupMode::All,
+                        show_members: true,
+                    }),
+                ),
             ],
             pages: vec![PageSpec {
                 slug: "platform".parse().unwrap(),
@@ -156,6 +165,7 @@ mod tests {
             text.contains(r#"interval = "1m""#) && text.contains(r#"packet_timeout = "500ms""#),
             "durations stay human: {text}"
         );
+        assert!(text.contains(r#"type = "group""#), "{text}");
         assert_eq!(ConfigFile::from_toml(&text).unwrap(), file());
     }
 

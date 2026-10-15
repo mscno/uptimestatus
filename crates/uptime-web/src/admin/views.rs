@@ -32,6 +32,7 @@ pub(crate) fn target(check: &CheckSpec) -> String {
                 None => endpoint,
             }
         }
+        CheckSpec::Group(group) => format!("group {}, {}", group.path, group.mode.as_str()),
         CheckSpec::Mqtt(mqtt) => {
             let broker = format!(
                 "mqtt{}://{}:{}",
@@ -152,6 +153,9 @@ pub(crate) async fn text_field(
     errors: &FormErrors,
     #[default] hint: &str,
     #[default] placeholder: &str,
+    /// The id of a `<datalist>` of suggestions.
+    #[default]
+    list: &str,
 ) -> Result<impl View> {
     let error = errors.get(name).map(str::to_owned);
     let id = format!("field-{name}");
@@ -164,6 +168,7 @@ pub(crate) async fn text_field(
                 name=(name)
                 value=(value)
                 placeholder=((!placeholder.is_empty()).then_some(placeholder))
+                list=((!list.is_empty()).then_some(list))
                 aria-invalid=(error.is_some().then_some("true"))
             >
             if let Some(error) = error {
@@ -275,7 +280,56 @@ async fn protocol_check_fields(form: &MonitorForm, errors: &FormErrors) -> Resul
     .boxed())
 }
 
-/// The create/edit form. `action` is where it posts.
+/// Fields of a group monitor. Boxed, like [`protocol_check_fields`].
+#[component]
+async fn group_check_fields(
+    form: &MonitorForm,
+    errors: &FormErrors,
+    groups: &[String],
+) -> Result<impl View> {
+    let modes = [
+        (
+            "any",
+            "Any member is down (degraded while some are failing)",
+        ),
+        ("all", "Every member is down (degraded while some are)"),
+    ];
+    let mode = if form.group_mode == "all" {
+        "all"
+    } else {
+        "any"
+    };
+    Ok(view! {
+        <div data-show="$check_type == 'group'">
+            text_field(name: "group_path", label: "Folder", value: &form.group_path, errors: errors,
+                placeholder: "prod/eu", list: "group-paths",
+                hint: "The group folder this monitor summarises: every monitor in it and below. Nested group monitors count as members.")
+            <datalist id="group-paths">
+                for path in groups {
+                    <option value=(path.as_str())></option>
+                }
+            </datalist>
+            <div class="field">
+                <label for="field-group_mode">"Down when"</label>
+                <select id="field-group_mode" name="group_mode">
+                    for (value, label) in modes {
+                        <option value=(value) selected=(value == mode)>(label)</option>
+                    }
+                </select>
+                if let Some(error) = errors.get("group_mode") {
+                    <span class="error">(error.to_owned())</span>
+                } else {
+                    <span class="hint">"Paused, never-checked and maintenance members are left out. The group has no timeout and is never upside-down."</span>
+                }
+            </div>
+            checkbox(name: "group_show_members", label: "List the members (names and states) under the group on status pages", checked: form.group_show_members.is_some())
+        </div>
+    }
+    .boxed())
+}
+
+/// The create/edit form. `action` is where it posts; `groups` are the
+/// existing folder paths, suggested for group monitors.
 #[component]
 pub(crate) async fn monitor_form(
     form: &MonitorForm,
@@ -283,9 +337,10 @@ pub(crate) async fn monitor_form(
     action: &str,
     cancel: &str,
     #[default] channels: &[uptime_store::Channel],
+    #[default] groups: &[String],
 ) -> Result<impl View> {
     let check_type = match form.check_type.as_str() {
-        kind @ ("tcp" | "dns" | "push" | "ping" | "database" | "grpc" | "mqtt") => kind,
+        kind @ ("tcp" | "dns" | "push" | "ping" | "database" | "grpc" | "mqtt" | "group") => kind,
         _ => "http",
     };
     let methods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
@@ -336,9 +391,11 @@ pub(crate) async fn monitor_form(
                         <option value="database" selected=(check_type == "database")>"Database (PostgreSQL, MySQL, Redis)"</option>
                         <option value="grpc" selected=(check_type == "grpc")>"gRPC health"</option>
                         <option value="mqtt" selected=(check_type == "mqtt")>"MQTT broker"</option>
+                        <option value="group" selected=(check_type == "group")>"Group (follows the monitors in a folder)"</option>
                     </select>
                 </div>
                 protocol_check_fields(form: form, errors: errors)
+                group_check_fields(form: form, errors: errors, groups: groups)
                 <div data-show="$check_type == 'dns'">
                     <div class="fields">
                         text_field(name: "dns_name", label: "Name", value: &form.dns_name, errors: errors, placeholder: "example.com")

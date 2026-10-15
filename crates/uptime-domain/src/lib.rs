@@ -37,7 +37,7 @@ pub use check::{
 };
 pub use config::ConfigFile;
 pub use domain::{DnsAnswers, Edge, Hostname, HostnameError, points_at_edge};
-pub use group::{GroupError, normalize_group, rollup};
+pub use group::{GroupCheck, GroupError, GroupMode, GroupOutcome, Member, normalize_group, rollup};
 pub use incident::{Impact, IncidentKind, IncidentStatus};
 pub use json_rule::JsonRule;
 pub use maintenance::{MaintenanceError, MaintenanceSpec, Repeat};

@@ -10,11 +10,14 @@ use std::{
 
 use jiff::{Timestamp, Unit};
 use tokio::{
-    sync::{Notify, OwnedSemaphorePermit, Semaphore},
+    sync::{Notify, OwnedSemaphorePermit, RwLock, Semaphore},
     task::JoinSet,
 };
 use tokio_util::sync::CancellationToken;
-use uptime_domain::{CheckSpec, Health, Observation, Report, Transition, evaluate, state};
+use uptime_domain::{
+    CheckSpec, GroupCheck, GroupOutcome, Health, MonitorState, Observation, Report, Transition,
+    Verdict, evaluate, group, state,
+};
 use uptime_store::{CertUpdate, CheckRecord, Claim, Store, StoreError};
 use url::Url;
 
@@ -191,6 +194,11 @@ impl<P: Probe> Scheduler<P> {
         } else {
             self.inner.store.monitors_in_maintenance(now).await?
         };
+        // Group monitors judge their members' states, so they wait for the
+        // batch's other checks, then run deepest path first (nested groups
+        // settle before the groups that include them).
+        let batch = Arc::new(RwLock::new(()));
+        let mut groups = Vec::new();
         for claim in claims {
             let in_maintenance = maintenance.contains(&claim.monitor.id);
             let Ok(permit) = self.inner.permits.clone().try_acquire_owned() else {
@@ -198,8 +206,29 @@ impl<P: Probe> Scheduler<P> {
                 tracing::error!(monitor = %claim.monitor.id, "no permit for a claimed check");
                 continue;
             };
+            if let CheckSpec::Group(check) = &claim.monitor.spec.check {
+                let depth = check.path.split('/').count();
+                groups.push((depth, claim, permit, in_maintenance));
+                continue;
+            }
+            let Ok(guard) = batch.clone().try_read_owned() else {
+                unreachable!("no writer holds the batch lock until all checks are spawned");
+            };
             let inner = self.inner.clone();
-            running.spawn(async move { inner.execute(claim, permit, in_maintenance).await });
+            running.spawn(async move {
+                inner.execute(claim, permit, in_maintenance).await;
+                drop(guard);
+            });
+        }
+        if !groups.is_empty() {
+            groups.sort_by_key(|(depth, ..)| std::cmp::Reverse(*depth));
+            let inner = self.inner.clone();
+            running.spawn(async move {
+                let _members_done = batch.write_owned().await;
+                for (_, claim, permit, in_maintenance) in groups {
+                    inner.execute(claim, permit, in_maintenance).await;
+                }
+            });
         }
         Ok(started)
     }
@@ -260,6 +289,9 @@ impl<P: Probe> Inner<P> {
     async fn execute(&self, claim: Claim, _permit: OwnedSemaphorePermit, in_maintenance: bool) {
         let spec = &claim.monitor.spec;
         let observation = match &spec.check {
+            CheckSpec::Group(check) => {
+                return self.judge_group(&claim, check, in_maintenance).await;
+            }
             CheckSpec::Push(_) => uptime_domain::push::observe(
                 claim.last_push.as_ref(),
                 (self.clock)(),
@@ -269,7 +301,6 @@ impl<P: Probe> Inner<P> {
         };
         let checked_at = (self.clock)();
         let verdict = evaluate(&spec.check, &spec.policy, &observation);
-        let step = state::apply(claim.runtime, &spec.policy, verdict.health, in_maintenance);
         let cert = cert_update(
             &spec.check,
             &observation,
@@ -277,6 +308,67 @@ impl<P: Probe> Inner<P> {
             checked_at,
             in_maintenance,
         );
+        self.finish(&claim, verdict, cert, checked_at, in_maintenance)
+            .await;
+    }
+
+    /// Judges a group monitor from its members' current states.
+    async fn judge_group(&self, claim: &Claim, check: &GroupCheck, in_maintenance: bool) {
+        let members = match self.store.group_members(claim.monitor.id).await {
+            Ok(members) => members,
+            Err(error) => {
+                tracing::error!(error = %Report(&error), "loading group members failed; the slot will be retried");
+                return;
+            }
+        };
+        let view: Vec<_> = members
+            .iter()
+            .map(uptime_store::MonitorOverview::as_member)
+            .collect();
+        let checked_at = (self.clock)();
+        let (verdict, in_maintenance) = match group::judge(check.mode, &view) {
+            GroupOutcome::Judged(verdict) => (verdict, in_maintenance),
+            GroupOutcome::Maintenance => (
+                Verdict {
+                    health: Health::Up,
+                    latency: None,
+                    status_code: None,
+                    response_body: None,
+                    reason: None,
+                },
+                true,
+            ),
+            GroupOutcome::Empty(message) => {
+                let policy = &claim.monitor.spec.policy;
+                let next = schedule::next_run_at(claim.scheduled_for, policy.interval, checked_at);
+                if let Err(error) = self
+                    .store
+                    .record_unknown(claim.monitor.id, checked_at, next, &message)
+                    .await
+                {
+                    tracing::error!(error = %Report(&error), "recording the group failed; the slot will be retried");
+                    return;
+                }
+                self.changed(claim, MonitorState::Unknown, None, None, checked_at)
+                    .await;
+                return;
+            }
+        };
+        self.finish(claim, verdict, None, checked_at, in_maintenance)
+            .await;
+    }
+
+    /// Advances the state machine with `verdict` and records the result.
+    async fn finish(
+        &self,
+        claim: &Claim,
+        verdict: Verdict,
+        cert: Option<CertUpdate>,
+        checked_at: Timestamp,
+        in_maintenance: bool,
+    ) {
+        let spec = &claim.monitor.spec;
+        let step = state::apply(claim.runtime, &spec.policy, verdict.health, in_maintenance);
         let record = CheckRecord {
             monitor_id: claim.monitor.id,
             scheduled_for: claim.scheduled_for,
@@ -295,18 +387,53 @@ impl<P: Probe> Inner<P> {
             return;
         }
 
+        let latency_ms = record
+            .verdict
+            .latency
+            .map(|l| i64::try_from(l.as_millis()).unwrap_or(i64::MAX));
+        self.changed(
+            claim,
+            step.runtime.state,
+            step.transition,
+            latency_ms,
+            checked_at,
+        )
+        .await;
+    }
+
+    /// Announces a finished check; a new state also makes the groups that
+    /// include the monitor due, so they re-judge without waiting.
+    async fn changed(
+        &self,
+        claim: &Claim,
+        state: MonitorState,
+        transition: Option<Transition>,
+        latency_ms: Option<i64>,
+        checked_at: Timestamp,
+    ) {
         self.events.publish(CheckCompleted {
             monitor_id: claim.monitor.id,
-            key: spec.key.clone(),
+            key: claim.monitor.spec.key.clone(),
             previous: claim.runtime.state,
-            state: step.runtime.state,
-            transition: step.transition,
-            latency_ms: record
-                .verdict
-                .latency
-                .map(|l| i64::try_from(l.as_millis()).unwrap_or(i64::MAX)),
+            state,
+            transition,
+            latency_ms,
             checked_at,
         });
+        if state == claim.runtime.state {
+            return;
+        }
+        match self
+            .store
+            .expedite_groups(claim.monitor.id, checked_at)
+            .await
+        {
+            Ok(0) => {}
+            Ok(_) => self.wake.notify_one(),
+            Err(error) => {
+                tracing::warn!(error = %Report(&error), "making the monitor's groups due failed");
+            }
+        }
     }
 }
 

@@ -774,3 +774,192 @@ async fn incidents_require_two_failures_even_when_retries_are_disabled() {
     assert_eq!(incidents.len(), 1);
     assert_eq!(incidents[0].updates.len(), 3);
 }
+
+// ── Group monitors ───────────────────────────────────────────────────────
+
+fn member_of(key: &str, folder: &str) -> MonitorSpec {
+    MonitorSpec {
+        group: Some(folder.into()),
+        ..spec(key, 0)
+    }
+}
+
+fn group_over(key: &str, path: &str) -> MonitorSpec {
+    MonitorSpec {
+        check: CheckSpec::Group(uptime_domain::GroupCheck::path(path)),
+        ..spec(key, 0)
+    }
+}
+
+/// Fails every probe while switched on, whatever order checks run in.
+struct Toggle(Mutex<bool>);
+
+impl Toggle {
+    fn new() -> Arc<Self> {
+        Arc::new(Self(Mutex::new(false)))
+    }
+
+    fn fail(&self, failing: bool) {
+        *self.0.lock().unwrap() = failing;
+    }
+}
+
+impl Probe for Toggle {
+    async fn probe(&self, _check: &CheckSpec, _timeout: Duration) -> Observation {
+        if *self.0.lock().unwrap() {
+            refused()
+        } else {
+            ok(5)
+        }
+    }
+}
+
+async fn group_incident(store: &Store, title: &str) -> Option<uptime_store::Incident> {
+    store
+        .list_incidents(10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|i| i.title == title)
+}
+
+#[tokio::test]
+async fn group_monitors_follow_their_members_and_open_incidents() {
+    let db = TestDb::new().await;
+    let store = db.store();
+    let start = base_time();
+    let api = store
+        .create_monitor(&member_of("api", "prod/eu"), start)
+        .await
+        .unwrap();
+    store
+        .create_monitor(&member_of("web", "prod"), start)
+        .await
+        .unwrap();
+    let group = store
+        .create_monitor(&group_over("prod-all", "prod"), start)
+        .await
+        .unwrap();
+    let probe = Toggle::new();
+    let clock = ManualClock::at(start);
+    let runner = scheduler(store, probe.clone(), &clock, 8);
+
+    // Members run first in a batch, so the group already sees them.
+    runner.run_due().await.unwrap();
+    assert_eq!(
+        state(store, group.id).await,
+        (MonitorState::Up, 0, plus(start, 60))
+    );
+    assert_eq!(store.recent_checks(group.id, 10).await.unwrap().len(), 1);
+
+    // The members go down (retries 0): the group follows in the same batch.
+    probe.fail(true);
+    clock.set(plus(start, 60));
+    runner.run_due().await.unwrap();
+    assert_eq!(state(store, api.id).await.0, MonitorState::Down);
+    assert_eq!(state(store, group.id).await.0, MonitorState::Down);
+    let latest = store.recent_checks(group.id, 1).await.unwrap().remove(0);
+    assert_eq!(
+        latest.error.as_deref(),
+        Some("reported: 2 of 2 members down: api, web")
+    );
+    assert_eq!(latest.latency_ms, None);
+    assert!(group_incident(store, "prod-all is down").await.is_none());
+
+    // Confirmed on the next check: an automatic incident for the group.
+    clock.set(plus(start, 80));
+    runner.run_due().await.unwrap();
+    assert!(group_incident(store, "prod-all is down").await.is_some());
+
+    // Recovery resolves it.
+    probe.fail(false);
+    clock.set(plus(start, 100));
+    runner.run_due().await.unwrap();
+    assert_eq!(state(store, group.id).await.0, MonitorState::Up);
+    let incident = group_incident(store, "prod-all is down").await.unwrap();
+    assert!(incident.resolved_at.is_some());
+}
+
+#[tokio::test]
+async fn member_changes_between_group_checks_make_the_group_due() {
+    let db = TestDb::new().await;
+    let store = db.store();
+    let start = base_time();
+    let mut quick = member_of("api", "prod");
+    quick.policy.interval = Duration::from_secs(30);
+    let api = store.create_monitor(&quick, start).await.unwrap();
+    let group = store
+        .create_monitor(&group_over("prod-all", "prod"), start)
+        .await
+        .unwrap();
+    let probe = Toggle::new();
+    let clock = ManualClock::at(start);
+    let runner = scheduler(store, probe.clone(), &clock, 8);
+    runner.run_due().await.unwrap();
+    assert_eq!(
+        state(store, group.id).await,
+        (MonitorState::Up, 0, plus(start, 60))
+    );
+
+    // The member fails at 30s; the group, due at 60s, becomes due at once.
+    probe.fail(true);
+    clock.set(plus(start, 30));
+    runner.run_due().await.unwrap();
+    assert_eq!(state(store, api.id).await.0, MonitorState::Down);
+    assert_eq!(state(store, group.id).await.2, plus(start, 30));
+    runner.run_due().await.unwrap();
+    assert_eq!(state(store, group.id).await.0, MonitorState::Down);
+}
+
+#[tokio::test]
+async fn nested_groups_settle_before_their_parents() {
+    let db = TestDb::new().await;
+    let store = db.store();
+    let start = base_time();
+    store
+        .create_monitor(&member_of("api", "prod/eu"), start)
+        .await
+        .unwrap();
+    let eu = MonitorSpec {
+        group: Some("prod".into()),
+        ..group_over("eu-all", "prod/eu")
+    };
+    store.create_monitor(&eu, start).await.unwrap();
+    let parent = store
+        .create_monitor(&group_over("prod-all", "prod"), start)
+        .await
+        .unwrap();
+    let probe = Toggle::new();
+    probe.fail(true);
+    let clock = ManualClock::at(start);
+    scheduler(store, probe, &clock, 8).run_due().await.unwrap();
+    let latest = store.recent_checks(parent.id, 1).await.unwrap().remove(0);
+    assert_eq!(
+        latest.error.as_deref(),
+        Some("reported: 2 of 2 members down: api, eu-all")
+    );
+}
+
+#[tokio::test]
+async fn groups_without_checked_members_are_unknown() {
+    let db = TestDb::new().await;
+    let store = db.store();
+    let start = base_time();
+    let group = store
+        .create_monitor(&group_over("empty", "nothing"), start)
+        .await
+        .unwrap();
+    let clock = ManualClock::at(start);
+    scheduler(store, ScriptedProbe::new(vec![], ok(5)), &clock, 4)
+        .run_due()
+        .await
+        .unwrap();
+    let runtime = store.runtime(group.id).await.unwrap().unwrap();
+    assert_eq!(runtime.runtime.state, MonitorState::Unknown);
+    assert_eq!(runtime.next_run_at, plus(start, 60));
+    assert_eq!(
+        runtime.last_error.as_deref(),
+        Some("the group has no members")
+    );
+    assert!(store.recent_checks(group.id, 10).await.unwrap().is_empty());
+}

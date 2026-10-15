@@ -10,6 +10,7 @@ mod config;
 mod convert;
 mod domains;
 mod error;
+mod groups;
 mod incidents;
 mod maintenance;
 mod models;

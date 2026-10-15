@@ -7,9 +7,10 @@ use std::{collections::BTreeMap, fmt, time::Duration};
 
 use serde::Deserialize;
 use uptime_domain::{
-    CheckError, CheckPolicy, CheckSpec, DatabaseCheck, DnsCheck, DnsRecordType, GrpcCheck,
-    HttpAuth, HttpCheck, HttpMethod, JsonRule, KeywordRule, MonitorKey, MonitorSpec, MqttCheck,
-    PingCheck, PolicyError, PushCheck, StatusRanges, TcpCheck, normalize_group, normalize_tags,
+    CheckError, CheckPolicy, CheckSpec, DatabaseCheck, DnsCheck, DnsRecordType, GroupCheck,
+    GroupMode, GrpcCheck, HttpAuth, HttpCheck, HttpMethod, JsonRule, KeywordRule, MonitorKey,
+    MonitorSpec, MqttCheck, PingCheck, PolicyError, PushCheck, StatusRanges, TcpCheck,
+    normalize_group, normalize_tags,
 };
 use url::Url;
 
@@ -97,6 +98,9 @@ pub struct MonitorForm {
     pub mqtt_client_id: String,
     pub mqtt_topic: String,
     pub mqtt_expect: String,
+    pub group_path: String,
+    pub group_mode: String,
+    pub group_show_members: Option<String>,
     pub interval: String,
     pub retry_interval: String,
     pub timeout: String,
@@ -170,6 +174,7 @@ impl MonitorForm {
             ping_count: "3".into(),
             ping_packet_timeout: "1s".into(),
             ping_loss_threshold: "100".into(),
+            group_mode: GroupMode::default().as_str().into(),
             interval: exact(policy.interval),
             retry_interval: exact(policy.retry_interval),
             timeout: exact(policy.timeout),
@@ -294,6 +299,12 @@ impl MonitorForm {
                 form.mqtt_topic = mqtt.topic.clone().unwrap_or_default();
                 form.mqtt_expect = mqtt.expect.clone().unwrap_or_default();
             }
+            CheckSpec::Group(group) => {
+                form.check_type = "group".into();
+                form.group_path = group.path.clone();
+                form.group_mode = group.mode.as_str().into();
+                form.group_show_members = flag(group.show_members);
+            }
         }
         form
     }
@@ -332,10 +343,11 @@ impl MonitorForm {
             "database" => Some(CheckSpec::Database(self.database_check())),
             "grpc" => self.grpc_check(&mut errors).map(CheckSpec::Grpc),
             "mqtt" => self.mqtt_check(&mut errors).map(CheckSpec::Mqtt),
+            "group" => self.group_check(&mut errors).map(CheckSpec::Group),
             _ => {
                 errors.insert(
                     "check_type",
-                    "Choose HTTP, TCP, DNS, push, ping, database, gRPC or MQTT.",
+                    "Choose HTTP, TCP, DNS, push, ping, database, gRPC, MQTT or group.",
                 );
                 None
             }
@@ -703,6 +715,30 @@ impl MonitorForm {
     }
 }
 
+impl MonitorForm {
+    fn group_check(&self, errors: &mut FormErrors) -> Option<GroupCheck> {
+        let path = match normalize_group(&self.group_path) {
+            Ok(Some(path)) => Some(path),
+            _ => {
+                errors.insert("group_path", sentence(&CheckError::GroupPath));
+                None
+            }
+        };
+        let mode = match blank(&self.group_mode) {
+            None => Some(GroupMode::default()),
+            Some(text) => text
+                .parse::<GroupMode>()
+                .map_err(|e| errors.insert("group_mode", sentence(&e)))
+                .ok(),
+        };
+        Some(GroupCheck {
+            path: path?,
+            mode: mode?,
+            show_members: self.group_show_members.is_some(),
+        })
+    }
+}
+
 /// The form field a check rule belongs to.
 fn check_field(check: &CheckSpec, error: &CheckError) -> &'static str {
     match (check, error) {
@@ -715,6 +751,8 @@ fn check_field(check: &CheckSpec, error: &CheckError) -> &'static str {
         (_, CheckError::Metadata) => "grpc_metadata",
         (_, CheckError::Port) => "mqtt_port",
         (_, CheckError::ExpectWithoutTopic | CheckError::Topic) => "mqtt_topic",
+        (_, CheckError::GroupPath) => "group_path",
+        (_, CheckError::GroupMode) => "group_mode",
         (_, CheckError::Host) => "mqtt_host",
     }
 }

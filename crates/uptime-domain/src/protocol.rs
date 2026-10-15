@@ -29,6 +29,10 @@ pub enum CheckError {
     ExpectWithoutTopic,
     #[error("topics to subscribe to may use `+` and `#` wildcards but not be empty")]
     Topic,
+    #[error("enter a group path such as `prod/eu` (a-z, 0-9, `-` and `_`, up to 4 levels)")]
+    GroupPath,
+    #[error("choose `any` or `all`")]
+    GroupMode,
 }
 
 /// ICMP echo requests; UP while enough of them are answered.

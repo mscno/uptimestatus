@@ -221,6 +221,8 @@ enum DashRow<'a> {
         depth: usize,
         state: MonitorState,
         count: usize,
+        /// The group monitor summarising this folder: its page and name.
+        watcher: Option<(String, String)>,
     },
     Monitor {
         overview: &'a uptime_store::MonitorOverview,
@@ -246,15 +248,24 @@ fn dash_rows(overviews: &[uptime_store::MonitorOverview]) -> Vec<DashRow<'_>> {
     fn walk<'a>(
         node: &Node<&'a uptime_store::MonitorOverview>,
         depth: usize,
+        overviews: &'a [uptime_store::MonitorOverview],
         rows: &mut Vec<DashRow<'a>>,
     ) {
         let all = node.all_items();
+        let watcher = overviews.iter().find_map(|o| match &o.monitor.spec.check {
+            CheckSpec::Group(group) if group.path == node.path => Some((
+                format!("/admin/monitors/{}", o.monitor.id),
+                o.monitor.spec.name.clone(),
+            )),
+            _ => None,
+        });
         rows.push(DashRow::Group {
             path: node.path.clone(),
             name: node.name.clone(),
             depth,
             state: uptime_domain::rollup(all.iter().map(|o| o.runtime.runtime.state)),
             count: all.len(),
+            watcher,
         });
         for overview in &node.items {
             rows.push(DashRow::Monitor {
@@ -263,7 +274,7 @@ fn dash_rows(overviews: &[uptime_store::MonitorOverview]) -> Vec<DashRow<'_>> {
             });
         }
         for child in &node.children {
-            walk(child, depth + 1, rows);
+            walk(child, depth + 1, overviews, rows);
         }
     }
 
@@ -273,7 +284,7 @@ fn dash_rows(overviews: &[uptime_store::MonitorOverview]) -> Vec<DashRow<'_>> {
         .map(|overview| DashRow::Monitor { overview, depth: 0 })
         .collect();
     for root in &roots {
-        walk(root, 0, &mut rows);
+        walk(root, 0, overviews, &mut rows);
     }
     rows
 }
@@ -302,7 +313,7 @@ async fn monitors_table(
                 <tbody>
                     #[key(row.key())]
                     for row in &rows {
-                        if let DashRow::Group { path, name, depth, state, count } = row {
+                        if let DashRow::Group { path, name, depth, state, count, watcher } = row {
                             <tr class="group-row" data-group=(path.as_str()) data-show="!$q && !$tagf"
                                 style=(format!("--depth: {depth}"))>
                                 <td></td>
@@ -310,6 +321,9 @@ async fn monitors_table(
                                 <td class="name-cell" colspan="6">
                                     <strong class="group-name">(name.as_str())</strong>
                                     <span class="muted small">" " (count.to_string()) if *count == 1 { " monitor" } else { " monitors" }</span>
+                                    if let Some((href, monitor)) = watcher {
+                                        <span class="muted small">" · followed by " <a href=(href.as_str())>(monitor.as_str())</a></span>
+                                    }
                                 </td>
                             </tr>
                         } else if let DashRow::Monitor { overview, depth } = row {
@@ -368,6 +382,7 @@ pub(crate) async fn new_monitor(cx: &Cx) -> Result<impl View> {
     let admin = require_admin(cx).await?;
     let store = &app(cx).store;
     let channels = store.list_channels().await?;
+    let groups = group_paths(&store.list_monitors().await?);
     let (title, form) = match copied_from(cx) {
         Some(id) => {
             let source = load_monitor(app(cx), MonitorId(id)).await?;
@@ -390,7 +405,7 @@ pub(crate) async fn new_monitor(cx: &Cx) -> Result<impl View> {
     Ok(view! {
         admin_shell(title: &title, admin: &admin, section: "monitors",
             <div class="page-head"><h1>(title.as_str())</h1></div>
-            <div class="card">monitor_form(form: &form, errors: &errors, action: "/admin/monitors", cancel: "/admin", channels: &channels)</div>
+            <div class="card">monitor_form(form: &form, errors: &errors, action: "/admin/monitors", cancel: "/admin", channels: &channels, groups: &groups)</div>
         )
     })
 }
@@ -423,6 +438,7 @@ pub(crate) async fn create_monitor(cx: &Cx, Form(input): Form<MonitorForm>) -> R
                     return see_other(format!("/admin/monitors/{}", monitor.id)).into_response(cx);
                 }
                 Err(StoreError::DuplicateKey(key)) => duplicate_key(&key.to_string()),
+                Err(StoreError::GroupCycle(keys)) => group_cycle(&keys),
                 Err(error) => return Err(error.into()),
             }
         }
@@ -447,6 +463,7 @@ pub(crate) async fn edit_monitor(cx: &Cx) -> Result<impl View> {
     let monitor = load_monitor(app(cx), id).await?;
     let store = &app(cx).store;
     let channels = store.list_channels().await?;
+    let groups = group_paths(&store.list_monitors().await?);
     let form =
         MonitorForm::from_spec(&monitor.spec).with_channels(&store.monitor_channels(id).await?);
     let errors = FormErrors::default();
@@ -454,7 +471,7 @@ pub(crate) async fn edit_monitor(cx: &Cx) -> Result<impl View> {
     Ok(view! {
         admin_shell(title: "Edit monitor", admin: &admin, section: "monitors",
             <div class="page-head"><h1>"Edit " (monitor.spec.name.as_str())</h1></div>
-            <div class="card">monitor_form(form: &form, errors: &errors, action: &action, cancel: &action, channels: &channels)</div>
+            <div class="card">monitor_form(form: &form, errors: &errors, action: &action, cancel: &action, channels: &channels, groups: &groups)</div>
         )
     })
 }
@@ -500,6 +517,7 @@ pub(crate) async fn update_monitor(cx: &Cx, Form(input): Form<MonitorForm>) -> R
                 return see_other(&action).into_response(cx);
             }
             Err(StoreError::DuplicateKey(key)) => duplicate_key(&key.to_string()),
+            Err(StoreError::GroupCycle(keys)) => group_cycle(&keys),
             Err(StoreError::MonitorNotFound(_)) => return Err(not_found().into()),
             Err(error) => return Err(error.into()),
         },
@@ -515,6 +533,37 @@ pub(crate) async fn update_monitor(cx: &Cx, Form(input): Form<MonitorForm>) -> R
         &action,
     )
     .await
+}
+
+fn group_cycle(keys: &[String]) -> FormErrors {
+    let mut errors = FormErrors::default();
+    errors.insert(
+        "group_path",
+        format!(
+            "Group monitors would include each other: {}. Move this monitor out of the folders those groups summarise, or pick another folder.",
+            keys.join(", ")
+        ),
+    );
+    errors
+}
+
+/// Every folder in use and the folders above them, for suggestions.
+fn group_paths(monitors: &[Monitor]) -> Vec<String> {
+    let mut paths: Vec<String> = Vec::new();
+    for group in monitors.iter().filter_map(|m| m.spec.group.as_deref()) {
+        let mut so_far = String::new();
+        for segment in group.split('/') {
+            if !so_far.is_empty() {
+                so_far.push('/');
+            }
+            so_far.push_str(segment);
+            if !paths.contains(&so_far) {
+                paths.push(so_far.clone());
+            }
+        }
+    }
+    paths.sort();
+    paths
 }
 
 fn duplicate_key(key: &str) -> FormErrors {
@@ -537,10 +586,11 @@ async fn form_page(
     cancel: &str,
 ) -> Result<Response> {
     let channels = app(cx).store.list_channels().await?;
+    let groups = group_paths(&app(cx).store.list_monitors().await?);
     let html = view! { cx =>
         admin_shell(title: title, admin: admin, section: "monitors",
             <div class="page-head"><h1>(title)</h1></div>
-            <div class="card">monitor_form(form: input, errors: errors, action: action, cancel: cancel, channels: &channels)</div>
+            <div class="card">monitor_form(form: input, errors: errors, action: action, cancel: cancel, channels: &channels, groups: &groups)</div>
         )
     }
     .single()
@@ -559,6 +609,10 @@ pub(crate) async fn monitor_detail(cx: &Cx) -> Result<impl View> {
     let monitor = load_monitor(state, id).await?;
     let runtime = state.store.runtime(id).await?.ok_or_else(not_found)?;
     let checks = state.store.recent_checks(id, 50).await?;
+    let members = match &monitor.spec.check {
+        CheckSpec::Group(_) => Some(state.store.group_members(id).await?),
+        _ => None,
+    };
     let now = Timestamp::now();
     let range = topcoat::router::query_params::<ChartQuery>(cx)
         .ok()
@@ -710,6 +764,24 @@ pub(crate) async fn monitor_detail(cx: &Cx) -> Result<impl View> {
             ),
             ("Expect", mqtt.expect.clone().unwrap_or_else(|| "—".into())),
         ],
+        CheckSpec::Group(group) => vec![
+            ("Folder", format!("{} and below", group.path)),
+            (
+                "Down when",
+                match group.mode {
+                    uptime_domain::GroupMode::Any => "any member is down".into(),
+                    uptime_domain::GroupMode::All => "every member is down".into(),
+                },
+            ),
+            (
+                "Status pages",
+                if group.show_members {
+                    "list the members".into()
+                } else {
+                    "show the group only".into()
+                },
+            ),
+        ],
         CheckSpec::Push(push) => vec![(
             "Push URL",
             state
@@ -815,6 +887,9 @@ pub(crate) async fn monitor_detail(cx: &Cx) -> Result<impl View> {
                 uptime_windows(windows: &metrics.windows)
             </div>
 
+            if let Some(members) = &members {
+                group_members(members: members, now: now)
+            }
             recent_checks(checks: &checks, now: now)
             uptime_corrections(action: &excuse_url, form: &correction, error: None)
             <div data-init=(format!("@get('{base}/live')"))></div>
@@ -826,6 +901,41 @@ pub(crate) async fn monitor_detail(cx: &Cx) -> Result<impl View> {
 #[component]
 async fn monitor_state(state: MonitorState) -> Result<impl View> {
     Ok(view! { <span id="monitor-state">state_pill(state: state)</span> })
+}
+
+/// A group monitor's members with their current state.
+#[component]
+async fn group_members(
+    members: &[uptime_store::MonitorOverview],
+    now: Timestamp,
+) -> Result<impl View> {
+    Ok(view! {
+        <div class="card table-wrap">
+            <h2>"Members"</h2>
+            if members.is_empty() {
+                <p class="muted">"No monitors are in this folder yet."</p>
+            } else {
+                <table class="list">
+                    <thead><tr><th>"State"</th><th>"Monitor"</th><th class="hide-sm">"Target"</th><th class="hide-sm">"Last check"</th></tr></thead>
+                    <tbody>
+                        for member in members {
+                            <tr>
+                                <td title=(member.runtime.last_error.clone())>state_pill(state: member.runtime.runtime.state)</td>
+                                <td class="name-cell">
+                                    <a href=(format!("/admin/monitors/{}", member.monitor.id))>(member.monitor.spec.name.as_str())</a>
+                                    <div class="muted small mono">(member.monitor.spec.group.clone().unwrap_or_default())</div>
+                                </td>
+                                <td class="small muted hide-sm">(target(&member.monitor.spec.check))</td>
+                                <td class="small hide-sm">
+                                    if let Some(at) = member.runtime.last_checked_at { ago(at: at, now: now) } else { "never" }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    })
 }
 
 /// The "Right now" facts and latency trend (patched live).
@@ -1238,11 +1348,18 @@ pub(crate) async fn test_saved(cx: &Cx) -> Result<PatchElements> {
 }
 
 async fn test_result(cx: &Cx, spec: &MonitorSpec) -> Result<String> {
-    let Some(prober) = &app(cx).prober else {
-        return result_panel(cx, "var(--unknown)", "Probing is not available", "").await;
+    let verdict = if let CheckSpec::Group(group) = &spec.check {
+        match group_verdict(cx, spec, group).await? {
+            Ok(verdict) => verdict,
+            Err(message) => return result_panel(cx, "var(--unknown)", "Unknown", &message).await,
+        }
+    } else {
+        let Some(prober) = &app(cx).prober else {
+            return result_panel(cx, "var(--unknown)", "Probing is not available", "").await;
+        };
+        let observation = prober.probe(&spec.check, spec.policy.timeout).await;
+        evaluate(&spec.check, &spec.policy, &observation)
     };
-    let observation = prober.probe(&spec.check, spec.policy.timeout).await;
-    let verdict = evaluate(&spec.check, &spec.policy, &observation);
     let color = match verdict.health {
         Health::Up => "var(--up)",
         Health::Degraded => "var(--degraded)",
@@ -1264,6 +1381,33 @@ async fn test_result(cx: &Cx, spec: &MonitorSpec) -> Result<String> {
         facts.push(reason.to_string());
     }
     result_panel(cx, color, &headline, &facts.join(" · ")).await
+}
+
+/// Judges a (possibly unsaved) group monitor from its members' current
+/// states: the verdict, or why there is nothing to judge.
+async fn group_verdict(
+    cx: &Cx,
+    spec: &MonitorSpec,
+    group: &uptime_domain::GroupCheck,
+) -> Result<std::result::Result<uptime_domain::Verdict, String>> {
+    use uptime_domain::{GroupOutcome, group::judge, group::members};
+    let mut overviews = app(cx).store.monitor_overviews().await?;
+    overviews.retain(|o| o.monitor.spec.key != spec.key);
+    let candidate = Monitor {
+        id: MonitorId(0),
+        spec: spec.clone(),
+    };
+    let mut all: Vec<uptime_domain::Member<'_>> = overviews
+        .iter()
+        .map(uptime_store::MonitorOverview::as_member)
+        .collect();
+    all.push(candidate.as_member(MonitorState::Unknown));
+    let of = all[all.len() - 1];
+    Ok(match judge(group.mode, &members(&of, &all)) {
+        GroupOutcome::Judged(verdict) => Ok(verdict),
+        GroupOutcome::Maintenance => Err("every member is in maintenance".into()),
+        GroupOutcome::Empty(message) => Err(message),
+    })
 }
 
 async fn result_panel(cx: &Cx, color: &str, headline: &str, detail: &str) -> Result<String> {

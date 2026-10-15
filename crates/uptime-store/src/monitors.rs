@@ -45,6 +45,7 @@ impl Store {
         spec: &MonitorSpec,
         first_run_at: Timestamp,
     ) -> Result<Monitor> {
+        self.ensure_acyclic(None, spec).await?;
         let mut db = self.db();
         let mut tx = self.transaction(&mut db).await?;
 
@@ -132,6 +133,7 @@ impl Store {
         spec: &MonitorSpec,
         now: Timestamp,
     ) -> Result<Monitor> {
+        self.ensure_acyclic(Some(id), spec).await?;
         let mut db = self.db();
         let mut tx = self.transaction(&mut db).await?;
         let existing = MonitorRecord::filter_by_id(id.0)
@@ -216,6 +218,8 @@ impl Store {
             .await?;
         reschedule(&mut tx, id, active, now).await?;
         tx.commit().await?;
+        // Its groups count it differently now (paused members are ignored).
+        self.expedite_groups(id, now).await?;
         Ok(())
     }
 

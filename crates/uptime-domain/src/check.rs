@@ -7,6 +7,7 @@ use url::Url;
 
 use crate::{
     JsonRule, StatusRanges,
+    group::GroupCheck,
     protocol::{CheckError, DatabaseCheck, GrpcCheck, MqttCheck, PingCheck},
 };
 
@@ -29,6 +30,8 @@ pub enum CheckSpec {
     Grpc(GrpcCheck),
     /// An MQTT broker connection, optionally waiting for a message.
     Mqtt(MqttCheck),
+    /// Derived from the monitors in a group folder; probes nothing.
+    Group(GroupCheck),
 }
 
 /// Replaces a masked value.
@@ -95,10 +98,13 @@ impl CheckSpec {
                 mqtt.password = mqtt.password.as_ref().map(|_| MASK.into());
                 mqtt.expect = mqtt.expect.as_ref().map(|_| MASK.into());
             }
+            // A folder path and a mode: nothing secret.
+            Self::Group(_) => {}
         }
     }
 
-    /// The `type` tag: `http`, `tcp`, `dns`, `push`, `ping`, `database`, `grpc` or `mqtt`.
+    /// The `type` tag: `http`, `tcp`, `dns`, `push`, `ping`, `database`, `grpc`,
+    /// `mqtt` or `group`.
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Http(_) => "http",
@@ -109,6 +115,7 @@ impl CheckSpec {
             Self::Database(_) => "database",
             Self::Grpc(_) => "grpc",
             Self::Mqtt(_) => "mqtt",
+            Self::Group(_) => "group",
         }
     }
 
@@ -120,6 +127,7 @@ impl CheckSpec {
             Self::Database(check) => check.validate(),
             Self::Grpc(check) => check.validate(),
             Self::Mqtt(check) => check.validate(),
+            Self::Group(check) => check.validate(),
             Self::Http(_) | Self::Tcp(_) | Self::Dns(_) | Self::Push(_) => Ok(()),
         }
     }

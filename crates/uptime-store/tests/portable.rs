@@ -624,3 +624,48 @@ async fn incident_diagnostics_and_excuses_work_on_sqlite_and_turso() {
         std::fs::remove_file(path).unwrap();
     }
 }
+
+#[tokio::test]
+async fn group_scheduling_helpers_work_on_sqlite_and_turso() {
+    for (scheme, backend) in [("sqlite", Backend::Sqlite), ("turso", Backend::Turso)] {
+        let path = temporary_path(scheme);
+        let store = connect(&format!("{scheme}:{}", path.display()), backend).await;
+        store.migrate().await.unwrap();
+        let member = store
+            .create_monitor(
+                &uptime_domain::MonitorSpec {
+                    group: Some("prod".into()),
+                    ..http_spec("api")
+                },
+                t(0),
+            )
+            .await
+            .unwrap();
+        let group = store
+            .create_monitor(
+                &uptime_domain::MonitorSpec {
+                    check: CheckSpec::Group(uptime_domain::GroupCheck::path("prod")),
+                    ..http_spec("prod-all")
+                },
+                t(0),
+            )
+            .await
+            .unwrap();
+        for claim in store.claim_due(t(0), 10, "test").await.unwrap() {
+            store
+                .record_unknown(claim.monitor.id, t(0), t(60), "idle")
+                .await
+                .unwrap();
+        }
+        assert_eq!(store.expedite_groups(member.id, t(10)).await.unwrap(), 1);
+        let runtime = store.runtime(group.id).await.unwrap().unwrap();
+        assert_eq!(runtime.next_run_at, t(10));
+        assert_eq!(runtime.runtime.state, MonitorState::Unknown);
+        assert_eq!(runtime.last_error.as_deref(), Some("idle"));
+        let members = store.group_members(group.id).await.unwrap();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].monitor.id, member.id);
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+}

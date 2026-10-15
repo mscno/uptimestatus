@@ -108,10 +108,11 @@ impl Prober {
             CheckSpec::Database(db) => database::probe(&self.resolver, db, timeout).await,
             CheckSpec::Grpc(grpc) => grpc::probe(&self.resolver, grpc, timeout).await,
             CheckSpec::Mqtt(mqtt) => mqtt::probe(&self.resolver, mqtt, timeout).await,
-            // Push monitors are judged from their heartbeats by the scheduler.
-            CheckSpec::Push(_) => Observation::Failed {
+            // Push monitors are judged from their heartbeats and group monitors
+            // from their members, by the scheduler.
+            CheckSpec::Push(_) | CheckSpec::Group(_) => Observation::Failed {
                 kind: uptime_domain::FailureKind::Io,
-                message: "push monitors are not probed".into(),
+                message: format!("{} monitors are not probed", check.kind()),
             },
         }
     }

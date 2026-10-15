@@ -231,19 +231,17 @@ impl Store {
     /// with the incident, plus raw history while it is retained (incidents
     /// from before 0.1.2 kept none). Declared incidents have none.
     pub async fn incident_checks(&self, incident: &Incident) -> Result<Vec<StoredCheck>> {
-        let mut checks: Vec<StoredCheck> = incident
-            .updates
-            .iter()
-            .filter_map(|u| u.check.clone())
-            .collect();
-        if let (IncidentKind::Auto, [monitor]) = (incident.kind, incident.monitor_ids.as_slice()) {
-            for check in self.streak_checks(*monitor, incident).await? {
-                let seen = checks
-                    .iter()
-                    .any(|c| c.checked_at == check.checked_at && c.region == check.region);
-                if !seen {
-                    checks.push(check);
-                }
+        let mut checks = match (incident.kind, incident.monitor_ids.as_slice()) {
+            (IncidentKind::Auto, [monitor]) => self.streak_checks(*monitor, incident).await?,
+            _ => Vec::new(),
+        };
+        // Raw rows carry the current excused mark; stored copies outlive them.
+        for check in incident.updates.iter().filter_map(|u| u.check.clone()) {
+            let seen = checks
+                .iter()
+                .any(|c| c.checked_at == check.checked_at && c.region == check.region);
+            if !seen {
+                checks.push(check);
             }
         }
         checks.sort_by_key(|c| c.checked_at);

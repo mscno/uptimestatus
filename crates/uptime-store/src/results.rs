@@ -59,6 +59,9 @@ pub struct StoredCheck {
     pub error: Option<String>,
     pub response_body: Option<String>,
     pub region: String,
+    /// An admin excused this failure: it counts as up.
+    #[serde(default)]
+    pub excused: bool,
 }
 
 /// Most rows [`Store::checks_since`] returns.
@@ -117,6 +120,20 @@ ON CONFLICT ("monitor_id", "day") DO UPDATE SET
     "latency_sum_ms" = "monitor_daily"."latency_sum_ms" + EXCLUDED."latency_sum_ms",
     "latency_count" = "monitor_daily"."latency_count" + EXCLUDED."latency_count",
     "latency_max_ms" = MAX("monitor_daily"."latency_max_ms", EXCLUDED."latency_max_ms")
+"#;
+
+/// Moves excused failures (`$1` down, `$2` pending) to `up` for one day;
+/// negative counts move them back.
+const EXCUSE_DAILY_SQL: &str = r#"
+UPDATE "monitor_daily" SET
+    "down" = "down" - $1, "pending" = "pending" - $2, "up" = "up" + $1 + $2
+WHERE "monitor_id" = $3 AND "day" = $4
+"#;
+
+const EXCUSE_DAILY_SQLITE_SQL: &str = r#"
+UPDATE "monitor_daily" SET
+    "down" = "down" - ?1, "pending" = "pending" - ?2, "up" = "up" + ?1 + ?2
+WHERE "monitor_id" = ?3 AND "day" = ?4
 "#;
 
 impl Store {
@@ -353,7 +370,11 @@ impl Store {
         .map(|r| {
             Ok(WindowCheck {
                 checked_at: r.checked_at,
-                state_after: convert::parse("check_results.state_after", &r.state_after)?,
+                state_after: if r.excused_at.is_some() {
+                    MonitorState::Up
+                } else {
+                    convert::parse("check_results.state_after", &r.state_after)?
+                },
                 latency_ms: r.latency_ms,
             })
         })
@@ -390,6 +411,94 @@ impl Store {
             tracing::info!(deleted = total, "pruned old check results");
         }
         Ok(total)
+    }
+
+    /// Excuses the monitor's failed checks in `[from, to]`: they count as up
+    /// in uptime and the daily bars, while their diagnostics stay. Returns how
+    /// many checks were excused.
+    #[tracing::instrument(skip(self))]
+    pub async fn excuse_checks(
+        &self,
+        monitor: MonitorId,
+        from: Timestamp,
+        to: Timestamp,
+        now: Timestamp,
+    ) -> Result<u64> {
+        self.set_excused(monitor, from, to, Some(now)).await
+    }
+
+    /// Counts the monitor's excused checks in `[from, to]` again. Returns how
+    /// many checks changed.
+    #[tracing::instrument(skip(self))]
+    pub async fn restore_checks(
+        &self,
+        monitor: MonitorId,
+        from: Timestamp,
+        to: Timestamp,
+    ) -> Result<u64> {
+        self.set_excused(monitor, from, to, None).await
+    }
+
+    async fn set_excused(
+        &self,
+        monitor: MonitorId,
+        from: Timestamp,
+        to: Timestamp,
+        excused_at: Option<Timestamp>,
+    ) -> Result<u64> {
+        let mut db = self.db();
+        let mut tx = self.transaction(&mut db).await?;
+        let fields = CheckResultRecord::fields();
+        let rows = CheckResultRecord::filter(
+            fields
+                .monitor_id()
+                .eq(monitor.0)
+                .and(fields.checked_at().ge(from))
+                .and(fields.checked_at().le(to))
+                .and(fields.health().eq(Health::Down.as_str())),
+        )
+        .exec(&mut tx)
+        .await?;
+        // (down, pending) checks moved per UTC day.
+        let mut days: std::collections::BTreeMap<Date, (i64, i64)> = Default::default();
+        let mut changed = 0;
+        for row in rows {
+            if row.excused_at.is_some() == excused_at.is_some() {
+                continue;
+            }
+            let moved = match convert::parse("check_results.state_after", &row.state_after)? {
+                MonitorState::Down => (1, 0),
+                MonitorState::Pending => (0, 1),
+                _ => continue,
+            };
+            CheckResultRecord::update_by_id(row.id)
+                .excused_at(excused_at)
+                .exec(&mut tx)
+                .await?;
+            let day = days
+                .entry(row.checked_at.to_zoned(TimeZone::UTC).date())
+                .or_default();
+            day.0 += moved.0;
+            day.1 += moved.1;
+            changed += 1;
+        }
+        let sign = if excused_at.is_some() { 1 } else { -1 };
+        let sql = if self.backend() == Backend::Postgres {
+            EXCUSE_DAILY_SQL
+        } else {
+            EXCUSE_DAILY_SQLITE_SQL
+        };
+        for (day, (down, pending)) in days {
+            toasty::sql::statement(sql)
+                .bind(sign * down)
+                .bind(sign * pending)
+                .bind(monitor.0)
+                .bind(self.raw_date(day))
+                .exec(&mut tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(changed)
     }
 
     /// The per-state counts for one UTC day.
@@ -439,5 +548,6 @@ pub(crate) fn stored_check(record: CheckResultRecord) -> Result<StoredCheck> {
         error: record.error,
         response_body: record.response_body,
         region: record.region,
+        excused: record.excused_at.is_some(),
     })
 }

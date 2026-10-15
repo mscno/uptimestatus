@@ -472,7 +472,10 @@ async fn incident_checks(checks: &[StoredCheck]) -> Result<impl View> {
                     for check in checks {
                         <tr>
                             <td class="small when">(fmt::when_precise(check.checked_at))</td>
-                            <td>health_pill(health: check.health)</td>
+                            <td>
+                                health_pill(health: check.health)
+                                if check.excused { " " <span class="small muted">"Excused"</span> }
+                            </td>
                             <td>state_pill(state: check.state_after)</td>
                             <td class="hide-sm">(check.status_code.map_or("—".into(), |c| c.to_string()))</td>
                             <td class="num">(check.latency_ms.map_or("—".into(), |ms| format!("{ms}ms")))</td>
@@ -491,6 +494,20 @@ async fn incident_checks(checks: &[StoredCheck]) -> Result<impl View> {
     })
 }
 
+/// `?excused=N`: how many checks "Excuse from uptime" just changed.
+#[topcoat::router::query_params]
+pub(crate) struct ExcusedQuery {
+    excused: Option<u64>,
+}
+
+fn excused_message(n: u64) -> String {
+    match n {
+        0 => "No failed checks left to excuse.".to_owned(),
+        1 => "Excused 1 failed check. It counts as up on status pages; count it again from the monitor page.".to_owned(),
+        n => format!("Excused {n} failed checks. They count as up on status pages; count them again from the monitor page."),
+    }
+}
+
 #[page("/admin/incidents/{id}")]
 pub(crate) async fn incident_detail(cx: &Cx) -> Result<impl View> {
     let admin = require_admin(cx).await?;
@@ -505,6 +522,11 @@ pub(crate) async fn incident_detail(cx: &Cx) -> Result<impl View> {
     let base = format!("/admin/incidents/{}", incident.id);
     let delete_url = format!("{base}/delete");
     let update_url = format!("{base}/updates");
+    let excuse_url = format!("{base}/excuse");
+    let excused = topcoat::router::query_params::<ExcusedQuery>(cx)
+        .ok()
+        .and_then(|q| q.excused)
+        .map(excused_message);
     let next_status = match incident.status {
         IncidentStatus::Investigating => IncidentStatus::Identified,
         IncidentStatus::Identified => IncidentStatus::Monitoring,
@@ -526,9 +548,18 @@ pub(crate) async fn incident_detail(cx: &Cx) -> Result<impl View> {
                 <span class=(status_pill(incident.status))>(incident.status.label())</span>
                 <span class=(impact_pill(incident.impact))>(incident.impact.label())</span>
                 <span class="spacer"></span>
+                if !incident.monitor_ids.is_empty() {
+                    <form method="post" action=(excuse_url)>
+                        <button class="btn" type="submit"
+                            title="Its failed checks count as up in uptime figures and the daily bars. Diagnostics are kept.">"Excuse from uptime"</button>
+                    </form>
+                }
                 delete_button(action: &delete_url, heading: "Delete this incident?",
-                    body: "It disappears from status pages and the incident history.")
+                    body: "It disappears from status pages and the incident history. Uptime is unaffected: excuse the outage first to clear it from the bars.")
             </div>
+            if let Some(message) = &excused {
+                <p class="flash" role="status">(message.as_str())</p>
+            }
             <div class="cols">
                 outage_summary(incident: &incident, affected: &affected, checks: &checks, now: now)
                 <div class="card">
@@ -598,6 +629,31 @@ pub(crate) async fn post_incident_update(
     state.pages.clear();
     tracing::info!(incident = id, status = %status, by = %admin.login, "incident updated");
     Ok(see_other(format!("/admin/incidents/{id}")))
+}
+
+/// Stops the incident's failed checks counting against uptime, for each
+/// affected monitor, from the first failure until it resolved (or now).
+#[route(POST "/admin/incidents/{id}/excuse")]
+pub(crate) async fn excuse_incident(cx: &Cx) -> Result<SeeOther> {
+    let admin = require_admin(cx).await?;
+    let incident = load_incident(cx).await?;
+    let state = app(cx);
+    let checks = state.store.incident_checks(&incident).await?;
+    let now = Timestamp::now();
+    let from = checks.first().map_or(incident.started_at, |c| {
+        c.checked_at.min(incident.started_at)
+    });
+    let to = incident.resolved_at.unwrap_or(now);
+    let mut excused = 0;
+    for monitor in &incident.monitor_ids {
+        excused += state.store.excuse_checks(*monitor, from, to, now).await?;
+    }
+    state.pages.clear();
+    tracing::info!(incident = incident.id, excused, by = %admin.login, "outage excused from uptime");
+    Ok(see_other(format!(
+        "/admin/incidents/{}?excused={excused}",
+        incident.id
+    )))
 }
 
 #[route(POST "/admin/incidents/{id}/delete")]

@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use futures_util::Stream;
 use jiff::Timestamp;
+use serde::Deserialize;
 use tokio::sync::broadcast::error::RecvError;
 use topcoat::{
     Result,
@@ -96,8 +97,8 @@ pub(crate) use domains::{add_domain, remove_domain, verify_domain};
 pub(crate) use images::{remove_image, upload_image};
 pub(crate) use incidents::{
     create_incident, create_maintenance, delete_incident, delete_maintenance, edit_maintenance,
-    incident_detail, incidents_page, maintenance_page, new_incident, new_maintenance,
-    post_incident_update, update_maintenance,
+    excuse_incident, incident_detail, incidents_page, maintenance_page, new_incident,
+    new_maintenance, post_incident_update, update_maintenance,
 };
 pub(crate) use pages::{
     create_page, delete_page, edit_page, export_toml, new_page, pages_list, update_page,
@@ -533,11 +534,16 @@ pub(crate) async fn monitor_detail(cx: &Cx) -> Result<impl View> {
         .and_then(|q| Range::parse(q.range.as_deref()?))
         .unwrap_or_default();
     let metrics = Metrics::load(&state.store, id, range, now).await?;
+    let correction = CorrectionForm::last_hour(now);
+    let corrected = topcoat::router::query_params::<CorrectionQuery>(cx)
+        .ok()
+        .and_then(|q| q.message());
     let spec = &monitor.spec;
     let policy = &spec.policy;
     let paused = !spec.active;
     let base = format!("/admin/monitors/{id}");
     let delete_url = format!("{base}/delete");
+    let excuse_url = format!("{base}/excuse");
     let details: Vec<(&str, String)> = match &spec.check {
         CheckSpec::Http(http) => vec![
             ("Request", format!("{} {}", http.method.as_str(), http.url)),
@@ -657,6 +663,9 @@ pub(crate) async fn monitor_detail(cx: &Cx) -> Result<impl View> {
                 delete_button(action: &delete_url, heading: "Delete this monitor?",
                     body: "Its check history goes too, and it disappears from every status page.")
             </div>
+            if let Some(message) = &corrected {
+                <p class="flash" role="status">(message.as_str())</p>
+            }
 
             <div class="cols">
                 <div class="card">
@@ -706,6 +715,7 @@ pub(crate) async fn monitor_detail(cx: &Cx) -> Result<impl View> {
             </div>
 
             recent_checks(checks: &checks, now: now)
+            uptime_corrections(action: &excuse_url, form: &correction, error: None)
             <div data-init=(format!("@get('{base}/live')"))></div>
         )
     })
@@ -779,7 +789,10 @@ async fn recent_checks(checks: &[uptime_store::StoredCheck], now: Timestamp) -> 
                         for check in checks {
                             <tr>
                                 <td class="small when">ago(at: check.checked_at, now: now)</td>
-                                <td>health_pill(health: check.health)</td>
+                                <td>
+                                    health_pill(health: check.health)
+                                    if check.excused { " " <span class="small muted">"Excused"</span> }
+                                </td>
                                 <td class="num">(check.latency_ms.map_or("—".into(), |ms| format!("{ms}ms")))</td>
                                 <td class="hide-sm">(check.status_code.map_or("—".into(), |c| c.to_string()))</td>
                                 <td class="small muted hide-sm">(check.region.as_str())</td>
@@ -791,6 +804,149 @@ async fn recent_checks(checks: &[uptime_store::StoredCheck], now: Timestamp) -> 
             }
         </div>
     })
+}
+
+/// `?excused=N` / `?restored=N`: what the last uptime correction changed.
+#[topcoat::router::query_params]
+pub(crate) struct CorrectionQuery {
+    excused: Option<u64>,
+    restored: Option<u64>,
+}
+
+impl CorrectionQuery {
+    fn message(&self) -> Option<String> {
+        let checks = |n: u64| {
+            if n == 1 {
+                "1 check".to_owned()
+            } else {
+                format!("{n} checks")
+            }
+        };
+        match (self.excused, self.restored) {
+            (Some(0), _) | (_, Some(0)) => Some("Nothing changed in that range.".to_owned()),
+            (Some(n), _) => Some(format!(
+                "Excused {}: they count as up on status pages.",
+                checks(n)
+            )),
+            (_, Some(n)) => Some(format!("{} count against uptime again.", checks(n))),
+            _ => None,
+        }
+    }
+}
+
+/// An uptime correction: a UTC range and whether to excuse or restore it.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct CorrectionForm {
+    from: String,
+    to: String,
+    action: String,
+}
+
+impl CorrectionForm {
+    fn last_hour(now: Timestamp) -> Self {
+        Self {
+            from: fmt::datetime_local(now - jiff::SignedDuration::from_hours(1)),
+            to: fmt::datetime_local(now),
+            action: String::new(),
+        }
+    }
+
+    /// The range and whether to excuse (`true`) or restore it.
+    fn parse(&self) -> Result<(Timestamp, Timestamp, bool), &'static str> {
+        let excuse = match self.action.as_str() {
+            "excuse" => true,
+            "restore" => false,
+            _ => return Err("Choose whether to excuse or restore the range."),
+        };
+        let (Some(from), Some(to)) = (
+            fmt::parse_datetime_local(&self.from),
+            fmt::parse_datetime_local(&self.to),
+        ) else {
+            return Err("Enter both times as UTC dates and times.");
+        };
+        if to <= from {
+            return Err("The end must come after the start.");
+        }
+        Ok((from, to, excuse))
+    }
+}
+
+/// Excuse failed checks in a range (they count as up), or count them again.
+#[component]
+async fn uptime_corrections(
+    action: &str,
+    form: &CorrectionForm,
+    error: Option<&str>,
+) -> Result<impl View> {
+    Ok(view! {
+        <div id="uptime-corrections" class="card">
+            <h2>"Uptime corrections"</h2>
+            <p class="small muted">
+                "Excuse failed checks that should not count, such as false alarms from the checker itself. "
+                "Excused checks count as up in uptime figures and the daily bars on status pages; their diagnostics are kept "
+                "and they can be counted again. Raw checks are kept for 90 days, so older days cannot be corrected."
+            </p>
+            if let Some(error) = error {
+                <p class="flash flash-error" role="alert">(error.to_owned())</p>
+            }
+            <form method="post" action=(action.to_owned())>
+                <div class="row">
+                    <div class="field">
+                        <label for="field-from">"From (UTC)"</label>
+                        <input type="datetime-local" id="field-from" name="from" value=(form.from.as_str()) required="">
+                    </div>
+                    <div class="field">
+                        <label for="field-to">"To (UTC)"</label>
+                        <input type="datetime-local" id="field-to" name="to" value=(form.to.as_str()) required="">
+                    </div>
+                </div>
+                <div class="actions">
+                    <button class="btn btn-primary" type="submit" name="action" value="excuse">"Excuse failures"</button>
+                    <button class="btn" type="submit" name="action" value="restore">"Count again"</button>
+                </div>
+            </form>
+        </div>
+    })
+}
+
+#[route(POST "/admin/monitors/{id}/excuse")]
+pub(crate) async fn correct_uptime(cx: &Cx, Form(input): Form<CorrectionForm>) -> Result<Response> {
+    let admin = require_admin(cx).await?;
+    let id = monitor_id(cx)?;
+    let state = app(cx);
+    let monitor = load_monitor(state, id).await?;
+    let base = format!("/admin/monitors/{id}");
+    let excuse_url = format!("{base}/excuse");
+    let error = match input.parse() {
+        Ok((from, to, excuse)) => {
+            let (changed, verb) = if excuse {
+                let changed = state
+                    .store
+                    .excuse_checks(id, from, to, Timestamp::now())
+                    .await?;
+                (changed, "excused")
+            } else {
+                (state.store.restore_checks(id, from, to).await?, "restored")
+            };
+            state.pages.clear();
+            tracing::info!(monitor = %id, %from, %to, changed, verb, by = %admin.login, "uptime corrected");
+            return see_other(format!("{base}?{verb}={changed}")).into_response(cx);
+        }
+        Err(error) => error,
+    };
+    let html = view! { cx =>
+        admin_shell(title: &monitor.spec.name, admin: &admin, section: "monitors",
+            <div class="page-head">
+                <h1><a href=(base.clone())>(monitor.spec.name.as_str())</a></h1>
+            </div>
+            uptime_corrections(action: &excuse_url, form: &input, error: Some(error))
+        )
+    }
+    .single()
+    .await?
+    .render(cx);
+    (StatusCode::UNPROCESSABLE_ENTITY, Html(html)).into_response(cx)
 }
 
 /// How often live pages refresh without an event (keeps relative times current).

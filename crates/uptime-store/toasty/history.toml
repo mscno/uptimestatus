@@ -129,3 +129,8 @@ snapshot_name = "0024_snapshot.toml"
 id = 1396207969298890320
 name = "0025_incident_diagnostics.sql"
 snapshot_name = "0025_snapshot.toml"
+
+[[migrations]]
+id = 8156651507014694728
+name = "0026_excused_checks.sql"
+snapshot_name = "0026_snapshot.toml"

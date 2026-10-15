@@ -649,3 +649,117 @@ async fn admins_review_an_outage_check_by_check() {
         1
     );
 }
+
+#[tokio::test]
+async fn admins_excuse_outages_from_uptime_and_count_them_again() {
+    use uptime_domain::{DownReason, Health, MonitorState, Runtime, Verdict};
+    let app = setup().await;
+    let store = app.db.store();
+    let monitor = store
+        .list_monitors()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|m| m.spec.key.as_str() == "api")
+        .unwrap();
+    // A false alarm a few minutes ago: two failures in four checks.
+    let start = Timestamp::now() - SignedDuration::from_mins(5);
+    for (offset, state, failures) in [
+        (0, MonitorState::Up, 0),
+        (20, MonitorState::Pending, 1),
+        (40, MonitorState::Down, 2),
+        (60, MonitorState::Up, 0),
+    ] {
+        let at = start + SignedDuration::from_secs(offset);
+        let failed = failures > 0;
+        store
+            .record_check(&uptime_store::CheckRecord {
+                monitor_id: monitor.id,
+                scheduled_for: at,
+                checked_at: at,
+                verdict: Verdict {
+                    health: if failed { Health::Down } else { Health::Up },
+                    latency: Some(std::time::Duration::from_millis(20)),
+                    status_code: Some(if failed { 502 } else { 200 }),
+                    reason: failed.then_some(DownReason::UnexpectedStatus(502)),
+                    response_body: None,
+                },
+                runtime: Runtime {
+                    state,
+                    consecutive_failures: failures,
+                },
+                transition: None,
+                cert: None,
+                next_run_at: at + SignedDuration::from_secs(20),
+                region: "fra".into(),
+            })
+            .await
+            .unwrap();
+    }
+    let incident = store.list_incidents(10).await.unwrap().remove(0);
+    let mut public = app.client();
+    let page = public.get("/s/platform").await;
+    page.assert_contains("75.00%").assert_contains("bar-down");
+
+    // From the incident: its failures stop counting.
+    let mut admin = app.signed_in("alice", 1001).await;
+    let detail_url = format!("/admin/incidents/{}", incident.id);
+    admin
+        .get(&detail_url)
+        .await
+        .assert_contains("Excuse from uptime");
+    let excused = admin.post_form(&format!("{detail_url}/excuse"), &[]).await;
+    assert_eq!(
+        excused.location(),
+        Some(format!("{detail_url}?excused=2").as_str())
+    );
+    admin
+        .get(&format!("{detail_url}?excused=2"))
+        .await
+        .assert_contains("Excused 2 failed checks")
+        .assert_contains("Excused");
+    let page = public.get("/s/platform").await;
+    page.assert_contains("100.00%");
+    assert!(!page.body.contains("75.00%"));
+    assert!(!page.body.contains("bar-down"));
+
+    // From the monitor: count a range again.
+    let monitor_url = format!("/admin/monitors/{}", monitor.id);
+    admin
+        .get(&monitor_url)
+        .await
+        .assert_contains("Uptime corrections");
+    let from = fmt_local(start - SignedDuration::from_mins(1));
+    let to = fmt_local(start + SignedDuration::from_mins(2));
+    let restored = admin
+        .post_form(
+            &format!("{monitor_url}/excuse"),
+            &[("from", &from), ("to", &to), ("action", "restore")],
+        )
+        .await;
+    assert_eq!(
+        restored.location(),
+        Some(format!("{monitor_url}?restored=2").as_str())
+    );
+    admin
+        .get(&format!("{monitor_url}?restored=2"))
+        .await
+        .assert_contains("2 checks count against uptime again");
+    public.get("/s/platform").await.assert_contains("75.00%");
+
+    // A backwards range explains itself and changes nothing.
+    let backwards = admin
+        .post_form(
+            &format!("{monitor_url}/excuse"),
+            &[("from", &to), ("to", &from), ("action", "excuse")],
+        )
+        .await;
+    assert_eq!(backwards.status, StatusCode::UNPROCESSABLE_ENTITY);
+    backwards.assert_contains("must come after");
+    public.get("/s/platform").await.assert_contains("75.00%");
+}
+
+/// A `datetime-local` value (UTC) for `at`, rounded down to the minute.
+fn fmt_local(at: Timestamp) -> String {
+    at.strftime("%Y-%m-%dT%H:%M").to_string()
+}

@@ -90,6 +90,8 @@ pub struct CheckResultRecord {
     pub error: Option<String>,
     pub response_body: Option<String>,
     pub region: String,
+    /// Set when an admin excused this failed check from uptime.
+    pub excused_at: Option<Timestamp>,
 }
 
 /// Per-monitor, per-UTC-day counters (kept forever; feeds the 90-day bars).

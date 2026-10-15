@@ -395,7 +395,7 @@ fn temporary_path(backend: &str) -> std::path::PathBuf {
 }
 
 #[tokio::test]
-async fn incident_diagnostics_survive_retention_on_sqlite_and_turso() {
+async fn incident_diagnostics_and_excuses_work_on_sqlite_and_turso() {
     for (scheme, backend) in [("sqlite", Backend::Sqlite), ("turso", Backend::Turso)] {
         let path = temporary_path(scheme);
         let store = connect(&format!("{scheme}:{}", path.display()), backend).await;
@@ -453,6 +453,25 @@ async fn incident_diagnostics_survive_retention_on_sqlite_and_turso() {
                 .as_deref(),
             Some("upstream unavailable")
         );
+        // Excusing the outage moves its checks to `up` in the day's tally.
+        let day = t(0).to_zoned(jiff::tz::TimeZone::UTC).date();
+        let tally = || async { store.daily_tally(monitor.id, day).await.unwrap().unwrap() };
+        let counts = |t: uptime_domain::Tally| (t.up, t.pending, t.down);
+        assert_eq!(counts(tally().await), (0, 1, 1));
+        assert_eq!(
+            store
+                .excuse_checks(monitor.id, t(0), t(30), t(40))
+                .await
+                .unwrap(),
+            2
+        );
+        assert_eq!(counts(tally().await), (2, 0, 0));
+        assert!(store.recent_checks(monitor.id, 1).await.unwrap()[0].excused);
+        assert_eq!(
+            store.restore_checks(monitor.id, t(0), t(30)).await.unwrap(),
+            2
+        );
+        assert_eq!(counts(tally().await), (0, 1, 1));
         store.prune_checks_before(t(30), 10).await.unwrap();
         assert_eq!(
             store.incident(incident.id).await.unwrap().unwrap(),

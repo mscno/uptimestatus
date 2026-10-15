@@ -155,6 +155,7 @@ pub static TABLES: &[Table] = &[
             ("error", Kind::Text),
             ("response_body", Kind::Text),
             ("region", Kind::Text),
+            ("excused_at", Kind::Timestamp),
         ],
         keys: &["id"],
     },

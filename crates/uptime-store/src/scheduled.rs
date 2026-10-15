@@ -108,7 +108,11 @@ impl Store {
         .exec(&mut tx)
         .await?;
         tx.commit().await?;
-        scheduled(record)
+        // Read it back: the database keeps `created_at` at its own precision
+        // (microseconds on PostgreSQL), not the nanoseconds set on insert.
+        self.scheduled(record.id)
+            .await?
+            .ok_or(StoreError::ScheduledNotFound(record.id))
     }
 
     pub async fn scheduled(&self, id: i64) -> Result<Option<ScheduledUpdate>> {

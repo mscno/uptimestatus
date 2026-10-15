@@ -113,7 +113,13 @@ impl Store {
         })
         .exec(&mut db)
         .await?;
-        link(record)
+        // Read it back: the database keeps `created_at` at its own precision
+        // (microseconds on PostgreSQL), not the nanoseconds set on insert.
+        link(
+            ReportLinkRecord::filter_by_id(record.id)
+                .get(&mut db)
+                .await?,
+        )
     }
 
     /// A page's links, newest first.

@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.4"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.98"
 publish = false
@@ -111,3 +111,7 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+[profile.release]
+# Keep symbols for readable backtraces; drop debug info from the image.
+strip = "debuginfo"

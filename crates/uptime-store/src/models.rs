@@ -371,3 +371,25 @@ pub struct IncidentMonitorRecord {
     #[index]
     pub monitor_id: i64,
 }
+
+/// Who changed what, and when. Kept forever (not pruned).
+#[derive(Debug, toasty::Model)]
+#[table = "audit_events"]
+pub struct AuditEventRecord {
+    #[key]
+    #[auto]
+    pub id: i64,
+    pub at: Timestamp,
+    /// An admin login, `api:<token name>` or `system`.
+    #[index]
+    pub actor: String,
+    /// Dotted, e.g. `monitor.update`.
+    #[index]
+    pub action: String,
+    pub target_kind: Option<String>,
+    #[index]
+    pub target_id: Option<String>,
+    pub summary: String,
+    /// JSON; never secrets.
+    pub details: Option<String>,
+}

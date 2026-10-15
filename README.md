@@ -142,6 +142,16 @@ without keys; an instance without keys also refuses a database that holds encryp
 - **Transfers** (`uptimestatus-transfer`) copy ciphertext as-is: the target needs the same keys.
   `export` writes plaintext TOML, so treat its output as a secret.
 
+### Audit trail
+
+Every change made in the console or through the write API is recorded with who made it (an
+admin's GitHub login, `api:<token name>`, or `system` for `secrets rotate`), what changed and
+when: monitors, pages, domains, images, incidents, maintenance, alert channels, API tokens,
+bulk actions, uptime corrections (with their reason), configuration exports and sign-ins.
+Changed fields are listed with their old and new values; credentials are shown as `***`, so a
+changed password is visible as changed but never stored. Browse and filter it under **Audit**
+in the console. The trail is kept forever (retention only prunes check history).
+
 ## Databases
 
 | Backend | `DATABASE_URL` | Persistence | Multiple instances |

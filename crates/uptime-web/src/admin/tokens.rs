@@ -18,8 +18,11 @@ use uptime_domain::TokenScope;
 use uptime_store::{AdminUser, ApiToken, NewApiToken};
 
 use super::Id;
+use serde_json::json;
+
 use crate::{
     api_v1::{hash_token, new_token},
+    audit,
     auth::{app, require_admin},
     views::{admin_shell, ago, delete_button},
 };
@@ -145,19 +148,29 @@ pub(crate) async fn create_token(cx: &Cx, Form(input): Form<TokenForm>) -> Resul
             .into_response(cx);
     }
     let secret = new_token();
-    state
+    let scope = scope.unwrap_or(TokenScope::Read);
+    let token = state
         .store
         .create_api_token(
             &NewApiToken {
                 name: name.to_owned(),
                 token_hash: hash_token(&secret),
-                scope: scope.unwrap_or(TokenScope::Read),
+                scope,
                 created_by: admin.login.clone(),
             },
             Timestamp::now(),
         )
         .await?;
     tracing::info!(name, by = %admin.login, "API token created");
+    audit::record(
+        state,
+        audit::admin(&admin),
+        "token.create",
+        audit::target("token", token.id),
+        format!("Created {} API token {name}", scope.as_str()),
+        json!({ "name": name, "scope": scope.as_str() }),
+    )
+    .await?;
     let tokens = state.store.list_api_tokens().await?;
     Html(render(cx, &admin, &tokens, Some(&secret), None).await?).into_response(cx)
 }
@@ -166,9 +179,26 @@ pub(crate) async fn create_token(cx: &Cx, Form(input): Form<TokenForm>) -> Resul
 pub(crate) async fn revoke_token(cx: &Cx) -> Result<SeeOther> {
     let admin = require_admin(cx).await?;
     let id = *path_param::<Id>(cx)?;
-    if !app(cx).store.delete_api_token(id).await? {
+    let state = app(cx);
+    let name = state
+        .store
+        .list_api_tokens()
+        .await?
+        .into_iter()
+        .find(|t| t.id == id)
+        .map(|t| t.name);
+    if !state.store.delete_api_token(id).await? {
         return Err(not_found().into());
     }
     tracing::info!(token = id, by = %admin.login, "API token revoked");
+    audit::record(
+        state,
+        audit::admin(&admin),
+        "token.revoke",
+        audit::target("token", id),
+        format!("Revoked API token {}", name.as_deref().unwrap_or("?")),
+        json!({ "name": name }),
+    )
+    .await?;
     Ok(see_other("/admin/api"))
 }

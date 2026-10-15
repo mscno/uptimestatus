@@ -15,7 +15,9 @@ use uptime_domain::{Edge, Hostname};
 use uptime_store::{CustomDomain, DomainStatus, StoreError};
 
 use super::Id;
-use crate::{auth::app, auth::require_admin, fmt};
+use serde_json::json;
+
+use crate::{audit, auth::app, auth::require_admin, fmt};
 
 path_param!(domain: i64, error = not_found);
 
@@ -207,8 +209,17 @@ pub(crate) async fn add_domain(cx: &Cx, Form(input): Form<DomainForm>) -> Result
         .add_domain(page_id, &hostname, Timestamp::now())
         .await
     {
-        Ok(_) => {
+        Ok(domain) => {
             tracing::info!(page = page_id, domain = %hostname, by = %admin.login, "custom domain added");
+            audit::record(
+                state,
+                audit::admin(&admin),
+                "domain.add",
+                audit::target("page", page_id),
+                format!("Added custom domain {hostname}"),
+                json!({ "domain": domain.id, "hostname": hostname.as_str() }),
+            )
+            .await?;
             let notice = Notice::info(format!(
                 "Added {hostname}. Point its DNS at {}, then press Verify.",
                 state.edge.host
@@ -239,6 +250,15 @@ pub(crate) async fn verify_domain(cx: &Cx) -> Result<PatchElements> {
     };
     let checked = verifier.verify(domain.id).await?;
     tracing::info!(domain = %checked.hostname, status = %checked.status, by = %admin.login, "custom domain verified on request");
+    audit::record(
+        app(cx),
+        audit::admin(&admin),
+        "domain.verify",
+        audit::target("page", domain.page_id),
+        format!("Verified custom domain {}: {}", checked.hostname, checked.status),
+        json!({ "domain": domain.id, "hostname": checked.hostname.as_str(), "status": checked.status.to_string() }),
+    )
+    .await?;
     let notice =
         match checked.status {
             DomainStatus::Verified => Notice::info(format!(
@@ -263,6 +283,15 @@ pub(crate) async fn remove_domain(cx: &Cx) -> Result<PatchElements> {
         state.domains_changed();
     }
     tracing::info!(domain = %domain.hostname, by = %admin.login, "custom domain removed");
+    audit::record(
+        state,
+        audit::admin(&admin),
+        "domain.remove",
+        audit::target("page", domain.page_id),
+        format!("Removed custom domain {}", domain.hostname),
+        json!({ "domain": domain.id, "hostname": domain.hostname.as_str() }),
+    )
+    .await?;
     patch(
         cx,
         domain.page_id,

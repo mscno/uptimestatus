@@ -13,7 +13,10 @@ use topcoat::{
 use uptime_store::{PageImage, StoreError};
 
 use super::Id;
+use serde_json::json;
+
 use crate::{
+    audit,
     auth::{app, require_admin},
     media::{self, MediaError},
 };
@@ -101,6 +104,16 @@ pub(crate) async fn upload_image(cx: &Cx, mut form: Multipart) -> Result<SeeOthe
     forget(cx, previous, Some(&file)).await?;
     state.pages.clear();
     tracing::info!(page = id, ?slot, file, by = %admin.login, "page image uploaded");
+    let kind = format!("{slot:?}").to_lowercase();
+    audit::record(
+        state,
+        audit::admin(&admin),
+        "image.upload",
+        audit::target("page", id),
+        format!("Uploaded a {kind} ({} bytes)", bytes.len()),
+        json!({ "slot": kind, "file": file, "bytes": bytes.len() }),
+    )
+    .await?;
     Ok(back(id, None))
 }
 
@@ -118,6 +131,16 @@ pub(crate) async fn remove_image(cx: &Cx) -> Result<SeeOther> {
     forget(cx, previous, None).await?;
     state.pages.clear();
     tracing::info!(page = id, ?slot, by = %admin.login, "page image removed");
+    let kind = format!("{slot:?}").to_lowercase();
+    audit::record(
+        state,
+        audit::admin(&admin),
+        "image.remove",
+        audit::target("page", id),
+        format!("Removed the {kind}"),
+        json!({ "slot": kind }),
+    )
+    .await?;
     Ok(back(id, None))
 }
 

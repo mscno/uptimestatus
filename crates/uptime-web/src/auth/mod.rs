@@ -31,7 +31,7 @@ use url::Url;
 pub use github::{GithubOAuth, OAuthError};
 
 use self::flow::Flow;
-use crate::{AppState, views::document};
+use crate::{AppState, audit, views::document};
 
 const FLOW_COOKIE: &str = "oauth_flow";
 const FLOW_TTL: Duration = Duration::from_secs(10 * 60);
@@ -288,6 +288,15 @@ async fn sign_in(cx: &Cx, identity: &GithubIdentity) -> Result<SeeOther> {
         pinned,
     ) {
         tracing::warn!(%denied, github_id = identity.github_id, "admin login denied");
+        audit::record(
+            state,
+            identity.login.clone(),
+            "auth.denied",
+            None,
+            format!("Sign-in refused for {}: {denied}", identity.login),
+            serde_json::json!({ "github_id": identity.github_id }),
+        )
+        .await?;
         return Ok(to_login("denied"));
     }
     let now = Timestamp::now();
@@ -308,11 +317,31 @@ async fn sign_in(cx: &Cx, identity: &GithubIdentity) -> Result<SeeOther> {
         })
         .await?;
     tracing::info!(login = %admin.login, "admin signed in");
+    audit::record(
+        state,
+        audit::admin(&admin),
+        "auth.login",
+        None,
+        format!("{} signed in", admin.login),
+        serde_json::Value::Null,
+    )
+    .await?;
     Ok(see_other("/admin"))
 }
 
 #[route(POST "/auth/logout")]
 pub(crate) async fn logout(cx: &Cx) -> Result<SeeOther> {
+    if let Some(admin) = current_admin(cx).await? {
+        audit::record(
+            app(cx),
+            audit::admin(&admin),
+            "auth.logout",
+            None,
+            format!("{} signed out", admin.login),
+            serde_json::Value::Null,
+        )
+        .await?;
+    }
     if let Some(hash) = session::stop(cx).await? {
         app(cx).store.delete_session(&hash).await?;
     }

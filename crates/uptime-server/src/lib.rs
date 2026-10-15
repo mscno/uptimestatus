@@ -43,6 +43,30 @@ pub async fn run(
             );
             store.ensure_secrets_readable().await?;
             let report = store.reseal().await.context("re-encrypting secrets")?;
+            let active = config
+                .secrets
+                .keyring()?
+                .map(|k| k.active_id().to_owned())
+                .unwrap_or_default();
+            store
+                .record_audit(
+                    &uptime_store::NewAuditEvent {
+                        actor: "system".into(),
+                        action: "secrets.rotate".into(),
+                        target: None,
+                        summary: format!(
+                            "Re-encrypted {} secrets with key {active}",
+                            report.total()
+                        ),
+                        details: serde_json::json!({
+                            "key": active,
+                            "sealed": report.sealed,
+                            "indexed": report.indexed,
+                        }),
+                    },
+                    jiff::Timestamp::now(),
+                )
+                .await?;
             tracing::info!(
                 sealed = ?report.sealed,
                 indexed = report.indexed,

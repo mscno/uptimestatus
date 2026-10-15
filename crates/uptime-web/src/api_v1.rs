@@ -29,7 +29,7 @@ use uptime_domain::{
 };
 use uptime_store::{ApiToken, Monitor, MonitorOverview, NewIncident, StoreError};
 
-use crate::auth::app;
+use crate::{audit, auth::app};
 
 /// SHA-256 of a token, as stored.
 pub fn hash_token(token: &str) -> [u8; 32] {
@@ -113,69 +113,6 @@ macro_rules! authorized {
     };
 }
 
-/// Request and match values are arbitrary user input and can contain secrets.
-/// A read token gets the check shape and destination host, but not those values.
-fn redact(spec: &mut MonitorSpec) {
-    use uptime_domain::{CheckSpec, HttpAuth};
-    const MASK: &str = "***";
-    match &mut spec.check {
-        CheckSpec::Http(http) => {
-            // Paths, query strings and URL userinfo can all carry credentials.
-            let _ = http.url.set_username("");
-            let _ = http.url.set_password(None);
-            http.url.set_path("/[redacted]");
-            http.url.set_query(None);
-            http.url.set_fragment(None);
-            for (_, value) in &mut http.headers {
-                *value = MASK.into();
-            }
-            if let Some(body) = &mut http.body {
-                *body = MASK.into();
-            }
-            match &mut http.auth {
-                Some(HttpAuth::Basic { username, password }) => {
-                    *username = MASK.into();
-                    *password = MASK.into();
-                }
-                Some(HttpAuth::Bearer { token }) => *token = MASK.into(),
-                None => {}
-            }
-            if let Some(keyword) = &mut http.keyword {
-                keyword.text = MASK.into();
-            }
-            if let Some(rule) = &mut http.json {
-                rule.path = MASK.into();
-                if let Some(expect) = &mut rule.expect {
-                    *expect = MASK.into();
-                }
-            }
-        }
-        CheckSpec::Tcp(tcp) => {
-            tcp.send = tcp.send.as_ref().map(|_| MASK.into());
-            tcp.expect = tcp.expect.as_ref().map(|_| MASK.into());
-        }
-        CheckSpec::Dns(dns) => dns.expect = dns.expect.as_ref().map(|_| MASK.into()),
-        CheckSpec::Push(push) => push.token = MASK.into(),
-        CheckSpec::Ping(_) => {}
-        CheckSpec::Database(db) => {
-            // Credentials, database name and options all live in the URL.
-            db.url = db.display_target();
-            db.query = db.query.as_ref().map(|_| MASK.into());
-            db.expect = db.expect.as_ref().map(|_| MASK.into());
-        }
-        CheckSpec::Grpc(grpc) => {
-            for (_, value) in &mut grpc.metadata {
-                *value = MASK.into();
-            }
-        }
-        CheckSpec::Mqtt(mqtt) => {
-            mqtt.username = mqtt.username.as_ref().map(|_| MASK.into());
-            mqtt.password = mqtt.password.as_ref().map(|_| MASK.into());
-            mqtt.expect = mqtt.expect.as_ref().map(|_| MASK.into());
-        }
-    }
-}
-
 #[derive(Serialize)]
 struct MonitorBody {
     #[serde(flatten)]
@@ -191,7 +128,7 @@ fn monitor_body(overview: MonitorOverview, scope: TokenScope) -> MonitorBody {
     let MonitorOverview { monitor, runtime } = overview;
     let mut spec = monitor.spec;
     if scope == TokenScope::Read {
-        redact(&mut spec);
+        spec = spec.redacted();
     }
     MonitorBody {
         spec,
@@ -304,7 +241,7 @@ fn parse_monitor(key: &str, mut body: Value) -> std::result::Result<MonitorSpec,
 /// Creates or replaces the monitor with this key.
 #[route(PUT "/api/v1/monitors/{key}")]
 pub(crate) async fn put_monitor(cx: &Cx, Json(body): Json<Value>) -> Result<Response> {
-    authorized!(cx, TokenScope::Write);
+    let token = authorized!(cx, TokenScope::Write);
     let key = path_param::<Key>(cx);
     let spec = match parse_monitor(key, body) {
         Ok(spec) => spec,
@@ -316,12 +253,38 @@ pub(crate) async fn put_monitor(cx: &Cx, Json(body): Json<Value>) -> Result<Resp
         Some(existing) => {
             let id = existing.monitor.id;
             state.store.update_monitor(id, &spec, now).await?;
+            let before = existing.monitor.spec;
+            let details = audit::changes(&before, &spec, &before.redacted(), &spec.redacted());
+            audit::record(
+                state,
+                audit::api(&token),
+                "monitor.update",
+                audit::target("monitor", id),
+                format!(
+                    "Updated monitor {} ({})",
+                    spec.name,
+                    audit::changed_fields(&details).join(", ")
+                ),
+                details,
+            )
+            .await?;
             (StatusCode::OK, id)
         }
         None => {
             let first_run = uptime_runtime::schedule::first_run_at(now, &spec.key, Duration::ZERO);
             match state.store.create_monitor(&spec, first_run).await {
-                Ok(Monitor { id, .. }) => (StatusCode::CREATED, id),
+                Ok(Monitor { id, .. }) => {
+                    audit::record(
+                        state,
+                        audit::api(&token),
+                        "monitor.create",
+                        audit::target("monitor", id),
+                        format!("Created monitor {} ({})", spec.name, spec.key),
+                        serde_json::json!({ "monitor": audit::value(&spec.redacted()) }),
+                    )
+                    .await?;
+                    (StatusCode::CREATED, id)
+                }
                 Err(StoreError::DuplicateKey(_)) => {
                     return fail(cx, StatusCode::CONFLICT, "a monitor with this key exists");
                 }
@@ -340,17 +303,27 @@ pub(crate) async fn put_monitor(cx: &Cx, Json(body): Json<Value>) -> Result<Resp
 
 #[route(DELETE "/api/v1/monitors/{key}")]
 pub(crate) async fn delete_monitor(cx: &Cx) -> Result<Response> {
-    authorized!(cx, TokenScope::Write);
+    let token = authorized!(cx, TokenScope::Write);
     let Some(overview) = find(cx, path_param::<Key>(cx)).await? else {
         return fail(cx, StatusCode::NOT_FOUND, "no such monitor");
     };
     app(cx).store.delete_monitor(overview.monitor.id).await?;
     app(cx).pages.clear();
+    let spec = &overview.monitor.spec;
+    audit::record(
+        app(cx),
+        audit::api(&token),
+        "monitor.delete",
+        audit::target("monitor", overview.monitor.id),
+        format!("Deleted monitor {} ({})", spec.name, spec.key),
+        serde_json::json!({ "monitor": audit::value(&spec.redacted()) }),
+    )
+    .await?;
     StatusCode::NO_CONTENT.into_response(cx)
 }
 
 async fn set_active(cx: &Cx, active: bool) -> Result<Response> {
-    authorized!(cx, TokenScope::Write);
+    let token = authorized!(cx, TokenScope::Write);
     let Some(overview) = find(cx, path_param::<Key>(cx)).await? else {
         return fail(cx, StatusCode::NOT_FOUND, "no such monitor");
     };
@@ -363,6 +336,23 @@ async fn set_active(cx: &Cx, active: bool) -> Result<Response> {
         state.wake_scheduler();
     }
     state.pages.clear();
+    audit::record(
+        state,
+        audit::api(&token),
+        if active {
+            "monitor.resume"
+        } else {
+            "monitor.pause"
+        },
+        audit::target("monitor", overview.monitor.id),
+        format!(
+            "{} monitor {}",
+            if active { "Resumed" } else { "Paused" },
+            overview.monitor.spec.name
+        ),
+        Value::Null,
+    )
+    .await?;
     StatusCode::NO_CONTENT.into_response(cx)
 }
 
@@ -426,7 +416,7 @@ pub(crate) async fn get_config(cx: &Cx) -> Result<Response> {
     let token = authorized!(cx, TokenScope::Read);
     let mut config = app(cx).store.export_config().await?;
     if token.scope == TokenScope::Read {
-        config.monitors.iter_mut().for_each(redact);
+        config.monitors = config.monitors.iter().map(MonitorSpec::redacted).collect();
     }
     Json(serde_json::json!({ "monitors": config.monitors, "pages": config.pages }))
         .into_response(cx)
@@ -464,7 +454,7 @@ fn store_failure(cx: &Cx, error: StoreError) -> Result<Response> {
 /// Creates or replaces the status page with this slug.
 #[route(PUT "/api/v1/pages/{slug}")]
 pub(crate) async fn put_page(cx: &Cx, Json(mut body): Json<Value>) -> Result<Response> {
-    authorized!(cx, TokenScope::Write);
+    let token = authorized!(cx, TokenScope::Write);
     let slug = path_param::<Slug>(cx);
     let Some(object) = body.as_object_mut() else {
         return fail(
@@ -494,7 +484,9 @@ pub(crate) async fn put_page(cx: &Cx, Json(mut body): Json<Value>) -> Result<Res
         return fail(cx, StatusCode::UNPROCESSABLE_ENTITY, "invalid slug");
     }
     let state = app(cx);
-    let result = match state.store.page_by_slug(slug).await? {
+    let existing = state.store.page_by_slug(slug).await?;
+    let before = existing.as_ref().map(|page| page.spec.clone());
+    let result = match existing {
         Some(existing) => state
             .store
             .update_page(existing.id, &spec)
@@ -509,6 +501,34 @@ pub(crate) async fn put_page(cx: &Cx, Json(mut body): Json<Value>) -> Result<Res
     match result {
         Ok((status, page)) => {
             state.pages.clear();
+            let (action, summary, details) = match &before {
+                Some(before) => {
+                    let details = audit::plain_changes(before, &page.spec);
+                    let summary = format!(
+                        "Updated status page {} ({})",
+                        page.spec.title,
+                        audit::changed_fields(&details).join(", ")
+                    );
+                    ("page.update", summary, details)
+                }
+                None => (
+                    "page.create",
+                    format!(
+                        "Created status page {} (/s/{})",
+                        page.spec.title, page.spec.slug
+                    ),
+                    serde_json::json!({ "page": audit::value(&page.spec) }),
+                ),
+            };
+            audit::record(
+                state,
+                audit::api(&token),
+                action,
+                audit::target("page", page.id),
+                summary,
+                details,
+            )
+            .await?;
             (status, Json(page.spec)).into_response(cx)
         }
         Err(error) => store_failure(cx, error),
@@ -517,13 +537,25 @@ pub(crate) async fn put_page(cx: &Cx, Json(mut body): Json<Value>) -> Result<Res
 
 #[route(DELETE "/api/v1/pages/{slug}")]
 pub(crate) async fn delete_page(cx: &Cx) -> Result<Response> {
-    authorized!(cx, TokenScope::Write);
+    let token = authorized!(cx, TokenScope::Write);
     let state = app(cx);
     let Some(page) = state.store.page_by_slug(path_param::<Slug>(cx)).await? else {
         return fail(cx, StatusCode::NOT_FOUND, "no such page");
     };
     state.store.delete_page(page.id).await?;
     state.pages.clear();
+    audit::record(
+        state,
+        audit::api(&token),
+        "page.delete",
+        audit::target("page", page.id),
+        format!(
+            "Deleted status page {} (/s/{})",
+            page.spec.title, page.spec.slug
+        ),
+        serde_json::json!({ "page": audit::value(&page.spec) }),
+    )
+    .await?;
     StatusCode::NO_CONTENT.into_response(cx)
 }
 
@@ -564,7 +596,7 @@ impl From<uptime_store::Incident> for IncidentBody {
 /// Declares an incident (for alerting integrations and runbooks).
 #[route(POST "/api/v1/incidents")]
 pub(crate) async fn create_incident(cx: &Cx, Json(input): Json<IncidentInput>) -> Result<Response> {
-    authorized!(cx, TokenScope::Write);
+    let token = authorized!(cx, TokenScope::Write);
     if input.title.trim().is_empty() || input.message.trim().is_empty() {
         return fail(
             cx,
@@ -590,6 +622,21 @@ pub(crate) async fn create_incident(cx: &Cx, Json(input): Json<IncidentInput>) -
     match state.store.declare_incident(&new, Timestamp::now()).await {
         Ok(incident) => {
             state.pages.clear();
+            audit::record(
+                state,
+                audit::api(&token),
+                "incident.declare",
+                audit::target("incident", incident.id),
+                format!("Declared incident {}", new.title),
+                serde_json::json!({
+                    "title": new.title,
+                    "impact": new.impact.as_str(),
+                    "status": new.status.as_str(),
+                    "message": new.message,
+                    "monitors": new.monitors.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                }),
+            )
+            .await?;
             (StatusCode::CREATED, Json(IncidentBody::from(incident))).into_response(cx)
         }
         Err(error) => store_failure(cx, error),
@@ -609,7 +656,7 @@ pub(crate) async fn post_incident_update(
     cx: &Cx,
     Json(input): Json<UpdateInput>,
 ) -> Result<Response> {
-    authorized!(cx, TokenScope::Write);
+    let token = authorized!(cx, TokenScope::Write);
     let id = *path_param::<Id>(cx)?;
     let message = input
         .message
@@ -623,6 +670,19 @@ pub(crate) async fn post_incident_update(
     {
         Ok(incident) => {
             state.pages.clear();
+            audit::record(
+                state,
+                audit::api(&token),
+                "incident.update",
+                audit::target("incident", id),
+                format!(
+                    "Posted a {} update to {}",
+                    input.status.label().to_lowercase(),
+                    incident.title
+                ),
+                serde_json::json!({ "status": input.status.as_str(), "message": message }),
+            )
+            .await?;
             Json(IncidentBody::from(incident)).into_response(cx)
         }
         Err(StoreError::IncidentNotFound(_)) => fail(cx, StatusCode::NOT_FOUND, "no such incident"),
@@ -632,7 +692,6 @@ pub(crate) async fn post_incident_update(
 
 #[cfg(test)]
 mod tests {
-    use uptime_domain::{CheckPolicy, CheckSpec, HttpAuth, HttpCheck};
 
     use super::*;
 
@@ -643,35 +702,6 @@ mod tests {
         assert_ne!(a, b);
         assert_eq!(hash_token(&a), hash_token(&a));
         assert_ne!(hash_token(&a), hash_token(&b));
-    }
-
-    #[test]
-    fn redaction_hides_arbitrary_request_values() {
-        let mut http = HttpCheck::get("https://example.com".parse().unwrap());
-        http.auth = Some(HttpAuth::Basic {
-            username: "bob".into(),
-            password: "hunter2".into(),
-        });
-        http.headers = vec![
-            ("X-Api-Key".into(), "sekret".into()),
-            ("Accept".into(), "text/html".into()),
-        ];
-        let mut spec = MonitorSpec {
-            key: "api".parse().unwrap(),
-            name: "API".into(),
-            check: CheckSpec::Http(http),
-            policy: CheckPolicy::default(),
-            active: true,
-            tags: vec![],
-            group: None,
-        };
-
-        redact(&mut spec);
-
-        let json = serde_json::to_string(&spec).unwrap();
-        for secret in ["hunter2", "sekret", "bob", "text/html"] {
-            assert!(!json.contains(secret), "{json}");
-        }
     }
 
     #[test]

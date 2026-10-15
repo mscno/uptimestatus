@@ -3,7 +3,7 @@
 
 use crate::{
     Backend, Result, Store, StoreError, convert,
-    convert::Row,
+    convert::{Row, like_escape},
     models::MonitorRecord,
     secrets::{SEALED_COLUMNS, is_sealed},
 };
@@ -179,11 +179,4 @@ impl Store {
             sql.replace('$', "?")
         }
     }
-}
-
-/// `text` as a literal `LIKE` pattern (with `ESCAPE '\'`).
-fn like_escape(text: &str) -> String {
-    text.replace('\\', r"\\")
-        .replace('%', r"\%")
-        .replace('_', r"\_")
 }

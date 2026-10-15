@@ -3,6 +3,7 @@
 //! [`Store`] is the only way the rest of the workspace touches the database.
 //! It speaks domain types; Toasty models and SQL stay inside this crate.
 
+mod audit;
 mod auth;
 pub mod bus;
 mod config;
@@ -25,6 +26,7 @@ use jiff::{Timestamp, civil::Date};
 use std::time::Duration;
 use toasty_core::driver::operation::TransactionMode;
 
+pub use audit::{AuditEvent, AuditQuery, AuditTarget, NewAuditEvent};
 pub use auth::{AdminUser, GithubIdentity, NewSession, SessionInfo};
 pub use domains::{CustomDomain, DomainStatus};
 pub use error::StoreError;

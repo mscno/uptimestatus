@@ -5,6 +5,7 @@ use std::fmt;
 
 use jiff::Timestamp;
 use serde::Deserialize;
+use serde_json::json;
 use topcoat::{
     Result,
     context::Cx,
@@ -28,6 +29,7 @@ use super::{
     form::FormErrors,
     views::{checkbox, text_field},
 };
+use crate::audit;
 use crate::{
     auth::{app, require_admin},
     views::{admin_shell, ago, delete_button},
@@ -424,6 +426,15 @@ pub(crate) async fn create_channel(cx: &Cx, Form(input): Form<ChannelForm>) -> R
                 .create_channel(&spec, Timestamp::now())
                 .await?;
             tracing::info!(channel = channel.id, kind = %spec.kind, by = %admin.login, "alert channel created");
+            audit::record(
+                app(cx),
+                audit::admin(&admin),
+                "channel.create",
+                audit::target("channel", channel.id),
+                format!("Created {} alert channel {}", spec.kind.label(), spec.name),
+                json!({ "channel": audit::value(&spec.redacted()) }),
+            )
+            .await?;
             see_other("/admin/alerts").into_response(cx)
         }
         Err(errors) => {
@@ -479,6 +490,25 @@ pub(crate) async fn update_channel(cx: &Cx, Form(input): Form<ChannelForm>) -> R
         Ok(spec) => match app(cx).store.update_channel(channel.id, &spec).await {
             Ok(_) => {
                 tracing::info!(channel = channel.id, by = %admin.login, "alert channel updated");
+                let details = audit::changes(
+                    &channel.spec,
+                    &spec,
+                    &channel.spec.redacted(),
+                    &spec.redacted(),
+                );
+                audit::record(
+                    app(cx),
+                    audit::admin(&admin),
+                    "channel.update",
+                    audit::target("channel", channel.id),
+                    format!(
+                        "Updated alert channel {} ({})",
+                        spec.name,
+                        audit::changed_fields(&details).join(", ")
+                    ),
+                    details,
+                )
+                .await?;
                 see_other("/admin/alerts").into_response(cx)
             }
             Err(StoreError::ChannelNotFound(_)) => Err(not_found().into()),
@@ -502,18 +532,28 @@ pub(crate) async fn update_channel(cx: &Cx, Form(input): Form<ChannelForm>) -> R
 #[route(POST "/admin/alerts/{id}/delete")]
 pub(crate) async fn delete_channel(cx: &Cx) -> Result<SeeOther> {
     let admin = require_admin(cx).await?;
-    let id = channel_id(cx)?;
+    let channel = load(cx).await?;
+    let id = channel.id;
     if !app(cx).store.delete_channel(id).await? {
         return Err(not_found().into());
     }
     tracing::info!(channel = id, by = %admin.login, "alert channel deleted");
+    audit::record(
+        app(cx),
+        audit::admin(&admin),
+        "channel.delete",
+        audit::target("channel", id),
+        format!("Deleted alert channel {}", channel.spec.name),
+        json!({ "channel": audit::value(&channel.spec.redacted()) }),
+    )
+    .await?;
     Ok(see_other("/admin/alerts"))
 }
 
 /// Sends a test alert now and patches the result into the channel's row.
 #[route(POST "/admin/alerts/{id}/test")]
 pub(crate) async fn test_channel(cx: &Cx) -> Result<PatchElements> {
-    require_admin(cx).await?;
+    let admin = require_admin(cx).await?;
     let channel = load(cx).await?;
     let outcome = match &app(cx).sender {
         Some(sender) => sender
@@ -522,6 +562,23 @@ pub(crate) async fn test_channel(cx: &Cx) -> Result<PatchElements> {
             .map_err(|e| e.message),
         None => Err("Sending is not available on this server.".to_owned()),
     };
+    audit::record(
+        app(cx),
+        audit::admin(&admin),
+        "channel.test",
+        audit::target("channel", channel.id),
+        format!(
+            "Sent a test alert to {}: {}",
+            channel.spec.name,
+            if outcome.is_ok() {
+                "delivered"
+            } else {
+                "failed"
+            }
+        ),
+        json!({ "delivered": outcome.is_ok() }),
+    )
+    .await?;
     let id = format!("test-{}", channel.id);
     let html = view! { cx =>
         <td class="small" id=(id)>

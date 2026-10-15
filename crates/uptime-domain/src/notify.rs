@@ -119,6 +119,15 @@ impl ChannelError {
 }
 
 impl ChannelSpec {
+    /// This channel with its webhook URL reduced to scheme and host, and its
+    /// signing secret masked (Slack and Discord URLs are themselves secrets).
+    pub fn redacted(&self) -> Self {
+        let mut spec = self.clone();
+        crate::check::redact_url(&mut spec.url);
+        spec.secret = spec.secret.as_ref().map(|_| crate::check::MASK.into());
+        spec
+    }
+
     pub fn validate(&self) -> Result<(), ChannelError> {
         if self.name.trim().is_empty() {
             return Err(ChannelError::MissingName);

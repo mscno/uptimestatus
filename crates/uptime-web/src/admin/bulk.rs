@@ -17,7 +17,12 @@ use topcoat::{
 use uptime_domain::{MonitorId, TagError, normalize_tags};
 use uptime_store::StoreError;
 
-use crate::auth::{app, require_admin};
+use serde_json::json;
+
+use crate::{
+    audit,
+    auth::{app, require_admin},
+};
 
 /// What the dashboard sends: the selected ids and what to do with them.
 #[derive(Debug, Default, Deserialize)]
@@ -107,6 +112,7 @@ pub(crate) async fn bulk_action(cx: &Cx, Signals(input): Signals<BulkSignals>) -
 
     let now = Timestamp::now();
     let mut done = 0;
+    let mut changed: Vec<i64> = Vec::new();
     for id in &ids {
         let result = match action {
             Action::Pause => state.store.set_monitor_active(*id, false, now).await,
@@ -126,7 +132,10 @@ pub(crate) async fn bulk_action(cx: &Cx, Signals(input): Signals<BulkSignals>) -
             },
         };
         match result {
-            Ok(()) => done += 1,
+            Ok(()) => {
+                done += 1;
+                changed.push(id.0);
+            }
             Err(StoreError::MonitorNotFound(_)) => {}
             Err(error) => return Err(error.into()),
         }
@@ -138,6 +147,16 @@ pub(crate) async fn bulk_action(cx: &Cx, Signals(input): Signals<BulkSignals>) -
         state.pages.clear();
     }
     tracing::info!(count = done, action = ?action, by = %admin.login, "bulk monitor action");
+    let verb = format!("{action:?}").to_lowercase();
+    audit::record(
+        state,
+        audit::admin(&admin),
+        &format!("bulk.{verb}"),
+        None,
+        format!("Bulk {verb} of {done} monitors"),
+        json!({ "monitors": changed, "tags": change }),
+    )
+    .await?;
     ExecuteScript::new("window.location.reload()").into_response(cx)
 }
 

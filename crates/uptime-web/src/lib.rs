@@ -10,6 +10,7 @@ pub mod admin;
 mod api;
 mod api_v1;
 mod assets;
+mod audit;
 pub mod auth;
 mod chart;
 pub mod fmt;
@@ -215,6 +216,7 @@ fn topcoat_router(state: &AppState) -> topcoat::router::Router {
         .page(admin::new_incident)
         .route(admin::create_incident)
         .page(admin::incident_detail)
+        .page(admin::audit_page)
         .route(admin::post_incident_update)
         .route(admin::delete_incident)
         .route(admin::excuse_incident)

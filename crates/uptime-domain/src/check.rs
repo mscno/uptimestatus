@@ -31,7 +31,73 @@ pub enum CheckSpec {
     Mqtt(MqttCheck),
 }
 
+/// Replaces a masked value.
+pub const MASK: &str = "***";
+
 impl CheckSpec {
+    /// Masks values that are arbitrary user input and can contain secrets
+    /// (URL paths, queries and userinfo, headers, bodies, credentials, match
+    /// rules, tokens), keeping the check's shape and destination host.
+    ///
+    /// Every check type must decide what to mask here: the match is
+    /// exhaustive on purpose.
+    pub fn redact(&mut self) {
+        match self {
+            Self::Http(http) => {
+                redact_url(&mut http.url);
+                for (_, value) in &mut http.headers {
+                    *value = MASK.into();
+                }
+                if let Some(body) = &mut http.body {
+                    *body = MASK.into();
+                }
+                match &mut http.auth {
+                    Some(HttpAuth::Basic { username, password }) => {
+                        *username = MASK.into();
+                        *password = MASK.into();
+                    }
+                    Some(HttpAuth::Bearer { token }) => *token = MASK.into(),
+                    None => {}
+                }
+                if let Some(keyword) = &mut http.keyword {
+                    keyword.text = MASK.into();
+                }
+                if let Some(rule) = &mut http.json {
+                    rule.path = MASK.into();
+                    if let Some(expect) = &mut rule.expect {
+                        *expect = MASK.into();
+                    }
+                }
+            }
+            Self::Tcp(tcp) => {
+                tcp.send = tcp.send.as_ref().map(|_| MASK.into());
+                tcp.expect = tcp.expect.as_ref().map(|_| MASK.into());
+            }
+            Self::Dns(dns) => dns.expect = dns.expect.as_ref().map(|_| MASK.into()),
+            Self::Push(push) => push.token = MASK.into(),
+            Self::Ping(_) => {}
+            Self::Database(db) => {
+                // Credentials, database name and options all live in the URL.
+                db.url = db.display_target();
+                db.query = db.query.as_ref().map(|_| MASK.into());
+                db.expect = db.expect.as_ref().map(|_| MASK.into());
+            }
+            Self::Grpc(grpc) => {
+                let _ = grpc.url.set_username("");
+                let _ = grpc.url.set_password(None);
+                grpc.url.set_query(None);
+                for (_, value) in &mut grpc.metadata {
+                    *value = MASK.into();
+                }
+            }
+            Self::Mqtt(mqtt) => {
+                mqtt.username = mqtt.username.as_ref().map(|_| MASK.into());
+                mqtt.password = mqtt.password.as_ref().map(|_| MASK.into());
+                mqtt.expect = mqtt.expect.as_ref().map(|_| MASK.into());
+            }
+        }
+    }
+
     /// The `type` tag: `http`, `tcp`, `dns`, `push`, `ping`, `database`, `grpc` or `mqtt`.
     pub fn kind(&self) -> &'static str {
         match self {
@@ -361,6 +427,16 @@ pub fn unescape(text: &str) -> Vec<u8> {
     out
 }
 
+/// Keeps a URL's scheme, host and port: paths, queries and userinfo can all
+/// carry credentials.
+pub fn redact_url(url: &mut Url) {
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_path("/[redacted]");
+    url.set_query(None);
+    url.set_fragment(None);
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
@@ -467,6 +543,67 @@ mod tests {
             !shown.contains("hunter2") && !shown.contains("abc"),
             "{shown}"
         );
+    }
+
+    #[test]
+    fn redaction_hides_protocol_check_secrets() {
+        for json in [
+            r#"{"type":"database","url":"postgres://ops:db-pass@db.example.com:5432/app?sslmode=require","query":"SELECT secret_col","expect":"db-expect"}"#,
+            r#"{"type":"grpc","url":"https://grpc-user:grpc-pass@grpc.example.com/?q=grpc-query","metadata":[["authorization","grpc-meta"]]}"#,
+            r#"{"type":"mqtt","host":"mqtt.example.com","username":"mqtt-user","password":"mqtt-pass","expect":"mqtt-expect"}"#,
+        ] {
+            let mut check: CheckSpec = serde_json::from_str(json).unwrap();
+            check.redact();
+            let shown = serde_json::to_string(&check).unwrap();
+            for secret in [
+                "db-pass",
+                "secret_col",
+                "db-expect",
+                "sslmode",
+                "grpc-user",
+                "grpc-pass",
+                "grpc-query",
+                "grpc-meta",
+                "mqtt-user",
+                "mqtt-pass",
+                "mqtt-expect",
+            ] {
+                assert!(!shown.contains(secret), "{shown}");
+            }
+            assert!(shown.contains(".example.com"), "{shown}");
+        }
+    }
+
+    #[test]
+    fn redaction_hides_arbitrary_request_values() {
+        let mut http = HttpCheck::get(
+            "https://user:pw@example.com/private?token=q"
+                .parse()
+                .unwrap(),
+        );
+        http.auth = Some(HttpAuth::Basic {
+            username: "bob".into(),
+            password: "hunter2".into(),
+        });
+        http.headers = vec![
+            ("X-Api-Key".into(), "sekret".into()),
+            ("Accept".into(), "text/html".into()),
+        ];
+        let mut check = CheckSpec::Http(http);
+        check.redact();
+        let json = serde_json::to_string(&check).unwrap();
+        for secret in [
+            "hunter2",
+            "sekret",
+            "bob",
+            "text/html",
+            "private",
+            "token=q",
+            "pw",
+        ] {
+            assert!(!json.contains(secret), "{json}");
+        }
+        assert!(json.contains("example.com"), "{json}");
     }
 
     #[test]

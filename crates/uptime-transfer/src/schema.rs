@@ -288,4 +288,18 @@ pub static TABLES: &[Table] = &[
         ],
         keys: &["id"],
     },
+    Table {
+        name: "audit_events",
+        columns: &[
+            ("id", Kind::Integer),
+            ("at", Kind::Timestamp),
+            ("actor", Kind::Text),
+            ("action", Kind::Text),
+            ("target_kind", Kind::Text),
+            ("target_id", Kind::Text),
+            ("summary", Kind::Text),
+            ("details", Kind::Json),
+        ],
+        keys: &["id"],
+    },
 ];

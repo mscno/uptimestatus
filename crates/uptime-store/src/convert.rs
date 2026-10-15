@@ -53,6 +53,13 @@ where
     value.parse().map_err(|e| StoreError::corrupt(context, e))
 }
 
+/// `text` as a literal `LIKE` pattern (with `ESCAPE '\'`).
+pub(crate) fn like_escape(text: &str) -> String {
+    text.replace('\\', r"\\")
+        .replace('%', r"\%")
+        .replace('_', r"\_")
+}
+
 /// Tags as stored: space-separated, `NULL` when empty.
 pub(crate) fn join_tags(tags: &[String]) -> Option<String> {
     (!tags.is_empty()).then(|| tags.join(" "))

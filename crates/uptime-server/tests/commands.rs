@@ -142,6 +142,22 @@ async fn secrets_rotate_re_encrypts_with_the_first_key() {
         .with_keyring(uptime_store::secrets::Keyring::parse(&new_key).unwrap());
     let channels = rotated.list_channels().await.unwrap();
     assert_eq!(channels[0].spec.secret.as_deref(), Some("signing"));
+    let recorded = rotated
+        .audit_events(&uptime_store::AuditQuery {
+            action: Some("secrets.rotate".into()),
+            limit: 5,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].actor, "system");
+    assert!(
+        !recorded[0]
+            .details
+            .to_string()
+            .contains(&new_key[new_key.len() - 10..])
+    );
 
     // Rotating needs keys; generating one needs no database.
     let mut keyless = config(&db);

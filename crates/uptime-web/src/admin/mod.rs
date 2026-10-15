@@ -1,6 +1,7 @@
 //! The admin console: monitors dashboard, CRUD, live updates and "Test now".
 
 mod alerts;
+mod audit_trail;
 mod bulk;
 mod domains;
 pub mod form;
@@ -16,6 +17,7 @@ use std::time::Duration;
 use futures_util::Stream;
 use jiff::Timestamp;
 use serde::Deserialize;
+use serde_json::{Value, json};
 use tokio::sync::broadcast::error::RecvError;
 use topcoat::{
     Result,
@@ -42,7 +44,7 @@ use self::{
     views::{monitor_form, monitor_row, summary, target},
 };
 use crate::{
-    AppState,
+    AppState, audit,
     auth::{app, require_admin},
     fmt,
     metrics::{Metrics, Range, latency_chart, uptime_windows},
@@ -92,6 +94,7 @@ pub(crate) use alerts::{
     alerts_page, create_channel, delete_channel, edit_channel, new_channel, test_channel,
     update_channel,
 };
+pub(crate) use audit_trail::audit_page;
 pub(crate) use bulk::bulk_action;
 pub(crate) use domains::{add_domain, remove_domain, verify_domain};
 pub(crate) use images::{remove_image, upload_image};
@@ -408,6 +411,15 @@ pub(crate) async fn create_monitor(cx: &Cx, Form(input): Form<MonitorForm>) -> R
                         .await?;
                     state.wake_scheduler();
                     tracing::info!(monitor = %monitor.id, key = %spec.key, by = %admin.login, "monitor created");
+                    audit::record(
+                        state,
+                        audit::admin(&admin),
+                        "monitor.create",
+                        audit::target("monitor", monitor.id),
+                        format!("Created monitor {} ({})", spec.name, spec.key),
+                        json!({ "monitor": audit::value(&spec.redacted()), "channels": input.channel_ids() }),
+                    )
+                    .await?;
                     return see_other(format!("/admin/monitors/{}", monitor.id)).into_response(cx);
                 }
                 Err(StoreError::DuplicateKey(key)) => duplicate_key(&key.to_string()),
@@ -453,6 +465,8 @@ pub(crate) async fn update_monitor(cx: &Cx, Form(input): Form<MonitorForm>) -> R
     let id = monitor_id(cx)?;
     let state = app(cx);
     let action = format!("/admin/monitors/{id}");
+    let before = load_monitor(state, id).await?.spec;
+    let channels_before = state.store.monitor_channels(id).await?;
     let errors = match input.to_spec() {
         Ok(spec) => match state
             .store
@@ -460,12 +474,29 @@ pub(crate) async fn update_monitor(cx: &Cx, Form(input): Form<MonitorForm>) -> R
             .await
         {
             Ok(_) => {
-                state
-                    .store
-                    .set_monitor_channels(id, &input.channel_ids())
-                    .await?;
+                let channels = input.channel_ids();
+                state.store.set_monitor_channels(id, &channels).await?;
                 state.wake_scheduler();
                 tracing::info!(monitor = %id, by = %admin.login, "monitor updated");
+                let mut details =
+                    audit::changes(&before, &spec, &before.redacted(), &spec.redacted());
+                if channels_before != channels {
+                    details["changed"]["channels"] =
+                        json!({ "from": channels_before, "to": channels });
+                }
+                audit::record(
+                    state,
+                    audit::admin(&admin),
+                    "monitor.update",
+                    audit::target("monitor", id),
+                    format!(
+                        "Updated monitor {} ({})",
+                        spec.name,
+                        audit::changed_fields(&details).join(", ")
+                    ),
+                    details,
+                )
+                .await?;
                 return see_other(&action).into_response(cx);
             }
             Err(StoreError::DuplicateKey(key)) => duplicate_key(&key.to_string()),
@@ -911,6 +942,8 @@ pub(crate) struct CorrectionForm {
     from: String,
     to: String,
     action: String,
+    /// Why, for the audit trail.
+    reason: String,
 }
 
 impl CorrectionForm {
@@ -919,6 +952,7 @@ impl CorrectionForm {
             from: fmt::datetime_local(now - jiff::SignedDuration::from_hours(1)),
             to: fmt::datetime_local(now),
             action: String::new(),
+            reason: String::new(),
         }
     }
 
@@ -971,6 +1005,12 @@ async fn uptime_corrections(
                         <input type="datetime-local" id="field-to" name="to" value=(form.to.as_str()) required="">
                     </div>
                 </div>
+                <div class="field">
+                    <label for="field-reason">"Reason"</label>
+                    <input type="text" id="field-reason" name="reason" value=(form.reason.as_str())
+                        placeholder="e.g. the checker's network was down">
+                    <span class="hint">"Optional; kept in the audit trail."</span>
+                </div>
                 <div class="actions">
                     <button class="btn btn-primary" type="submit" name="action" value="excuse">"Excuse failures"</button>
                     <button class="btn" type="submit" name="action" value="restore">"Count again"</button>
@@ -1001,6 +1041,31 @@ pub(crate) async fn correct_uptime(cx: &Cx, Form(input): Form<CorrectionForm>) -
             };
             state.pages.clear();
             tracing::info!(monitor = %id, %from, %to, changed, verb, by = %admin.login, "uptime corrected");
+            let reason = input.reason.trim();
+            audit::record(
+                state,
+                audit::admin(&admin),
+                if excuse {
+                    "uptime.excuse"
+                } else {
+                    "uptime.restore"
+                },
+                audit::target("monitor", id),
+                format!(
+                    "{} {changed} checks of {} from {} to {}",
+                    if excuse { "Excused" } else { "Counted again" },
+                    monitor.spec.name,
+                    fmt::when(from),
+                    fmt::when(to)
+                ),
+                json!({
+                    "from": from,
+                    "to": to,
+                    "checks": changed,
+                    "reason": (!reason.is_empty()).then_some(reason),
+                }),
+            )
+            .await?;
             return see_other(format!("{base}?{verb}={changed}")).into_response(cx);
         }
         Err(error) => error,
@@ -1097,6 +1162,23 @@ async fn set_active(cx: &Cx, active: bool) -> Result<SeeOther> {
         state.wake_scheduler();
     }
     tracing::info!(monitor = %id, active, by = %admin.login, "monitor toggled");
+    let name = load_monitor(state, id).await?.spec.name;
+    audit::record(
+        state,
+        audit::admin(&admin),
+        if active {
+            "monitor.resume"
+        } else {
+            "monitor.pause"
+        },
+        audit::target("monitor", id),
+        format!(
+            "{} monitor {name}",
+            if active { "Resumed" } else { "Paused" }
+        ),
+        Value::Null,
+    )
+    .await?;
     Ok(see_other(format!("/admin/monitors/{id}")))
 }
 
@@ -1104,10 +1186,24 @@ async fn set_active(cx: &Cx, active: bool) -> Result<SeeOther> {
 pub(crate) async fn delete_monitor(cx: &Cx) -> Result<SeeOther> {
     let admin = require_admin(cx).await?;
     let id = monitor_id(cx)?;
-    if !app(cx).store.delete_monitor(id).await? {
+    let state = app(cx);
+    let monitor = load_monitor(state, id).await?;
+    if !state.store.delete_monitor(id).await? {
         return Err(not_found().into());
     }
     tracing::info!(monitor = %id, by = %admin.login, "monitor deleted");
+    audit::record(
+        state,
+        audit::admin(&admin),
+        "monitor.delete",
+        audit::target("monitor", id),
+        format!(
+            "Deleted monitor {} ({})",
+            monitor.spec.name, monitor.spec.key
+        ),
+        json!({ "monitor": audit::value(&monitor.spec.redacted()) }),
+    )
+    .await?;
     Ok(see_other("/admin"))
 }
 

@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use jiff::Timestamp;
 use serde::Deserialize;
+use serde_json::json;
 use topcoat::{
     Result,
     context::Cx,
@@ -28,6 +29,7 @@ use super::{
     views::{checkbox, target, text_area, text_field},
 };
 use crate::{
+    audit,
     auth::{app, require_admin},
     fmt,
     views::{admin_shell, ago, delete_button, health_pill, state_pill},
@@ -290,6 +292,21 @@ pub(crate) async fn create_incident(cx: &Cx, Form(input): Form<IncidentForm>) ->
             Ok(incident) => {
                 state.pages.clear();
                 tracing::info!(incident = incident.id, by = %admin.login, "incident declared");
+                audit::record(
+                    state,
+                    audit::admin(&admin),
+                    "incident.declare",
+                    audit::target("incident", incident.id),
+                    format!("Declared incident {}", new.title),
+                    json!({
+                        "title": new.title,
+                        "impact": new.impact.as_str(),
+                        "status": new.status.as_str(),
+                        "message": new.message,
+                        "monitors": new.monitors.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                    }),
+                )
+                .await?;
                 return see_other(format!("/admin/incidents/{}", incident.id)).into_response(cx);
             }
             Err(StoreError::UnknownMonitors(keys)) => {
@@ -549,10 +566,21 @@ pub(crate) async fn incident_detail(cx: &Cx) -> Result<impl View> {
                 <span class=(impact_pill(incident.impact))>(incident.impact.label())</span>
                 <span class="spacer"></span>
                 if !incident.monitor_ids.is_empty() {
-                    <form method="post" action=(excuse_url)>
-                        <button class="btn" type="submit"
-                            title="Its failed checks count as up in uptime figures and the daily bars. Diagnostics are kept.">"Excuse from uptime"</button>
-                    </form>
+                    <button class="btn" type="button" data-on:click="el.nextElementSibling.show()"
+                        title="Its failed checks count as up in uptime figures and the daily bars. Diagnostics are kept.">"Excuse from uptime"</button>
+                    <sb-modal heading="Excuse this outage from uptime?">
+                        <p>"Its failed checks count as up in uptime figures and the daily bars on status pages. Diagnostics are kept, and the checks can be counted again from the monitor page."</p>
+                        <form id="excuse-form" method="post" action=(excuse_url)>
+                            <div class="field">
+                                <label for="field-reason">"Reason"</label>
+                                <input type="text" id="field-reason" name="reason"
+                                    placeholder="e.g. the checker's network was down">
+                                <span class="hint">"Optional; kept in the audit trail."</span>
+                            </div>
+                        </form>
+                        <button slot="footer" class="btn" type="button" data-sb-close="cancel">"Cancel"</button>
+                        <button slot="footer" class="btn btn-primary" type="submit" form="excuse-form">"Excuse from uptime"</button>
+                    </sb-modal>
                 }
                 delete_button(action: &delete_url, heading: "Delete this incident?",
                     body: "It disappears from status pages and the incident history. Uptime is unaffected: excuse the outage first to clear it from the bars.")
@@ -617,24 +645,44 @@ pub(crate) async fn post_incident_update(
     } else {
         input.message
     };
-    match state
+    let incident = match state
         .store
         .post_incident_update(id, status, &message, Timestamp::now())
         .await
     {
-        Ok(_) => {}
+        Ok(incident) => incident,
         Err(StoreError::IncidentNotFound(_)) => return Err(not_found().into()),
         Err(error) => return Err(error.into()),
-    }
+    };
     state.pages.clear();
     tracing::info!(incident = id, status = %status, by = %admin.login, "incident updated");
+    audit::record(
+        state,
+        audit::admin(&admin),
+        "incident.update",
+        audit::target("incident", id),
+        format!(
+            "Posted a {} update to {}",
+            status.label().to_lowercase(),
+            incident.title
+        ),
+        json!({ "status": status.as_str(), "message": message }),
+    )
+    .await?;
     Ok(see_other(format!("/admin/incidents/{id}")))
 }
 
 /// Stops the incident's failed checks counting against uptime, for each
 /// affected monitor, from the first failure until it resolved (or now).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct ExcuseForm {
+    /// Why, for the audit trail.
+    reason: String,
+}
+
 #[route(POST "/admin/incidents/{id}/excuse")]
-pub(crate) async fn excuse_incident(cx: &Cx) -> Result<SeeOther> {
+pub(crate) async fn excuse_incident(cx: &Cx, Form(input): Form<ExcuseForm>) -> Result<SeeOther> {
     let admin = require_admin(cx).await?;
     let incident = load_incident(cx).await?;
     let state = app(cx);
@@ -650,6 +698,22 @@ pub(crate) async fn excuse_incident(cx: &Cx) -> Result<SeeOther> {
     }
     state.pages.clear();
     tracing::info!(incident = incident.id, excused, by = %admin.login, "outage excused from uptime");
+    let reason = input.reason.trim();
+    audit::record(
+        state,
+        audit::admin(&admin),
+        "uptime.excuse",
+        audit::target("incident", incident.id),
+        format!("Excused {excused} checks of {} from uptime", incident.title),
+        json!({
+            "from": from,
+            "to": to,
+            "checks": excused,
+            "monitors": incident.monitor_ids.iter().map(|m| m.0).collect::<Vec<_>>(),
+            "reason": (!reason.is_empty()).then_some(reason),
+        }),
+    )
+    .await?;
     Ok(see_other(format!(
         "/admin/incidents/{}?excused={excused}",
         incident.id
@@ -661,11 +725,26 @@ pub(crate) async fn delete_incident(cx: &Cx) -> Result<SeeOther> {
     let admin = require_admin(cx).await?;
     let id = path_id(cx)?;
     let state = app(cx);
+    let incident = state.store.incident(id).await?.ok_or_else(not_found)?;
     if !state.store.delete_incident(id).await? {
         return Err(not_found().into());
     }
     state.pages.clear();
     tracing::info!(incident = id, by = %admin.login, "incident deleted");
+    audit::record(
+        state,
+        audit::admin(&admin),
+        "incident.delete",
+        audit::target("incident", id),
+        format!("Deleted incident {}", incident.title),
+        json!({
+            "title": incident.title,
+            "kind": incident.kind.as_str(),
+            "started_at": incident.started_at,
+            "resolved_at": incident.resolved_at,
+        }),
+    )
+    .await?;
     Ok(see_other("/admin/incidents"))
 }
 
@@ -924,6 +1003,15 @@ pub(crate) async fn create_maintenance(
             Ok(window) => {
                 state.pages.clear();
                 tracing::info!(maintenance = window.id, by = %admin.login, "maintenance scheduled");
+                audit::record(
+                    state,
+                    audit::admin(&admin),
+                    "maintenance.create",
+                    audit::target("maintenance", window.id),
+                    format!("Scheduled maintenance {}", spec.title),
+                    json!({ "maintenance": audit::value(&spec) }),
+                )
+                .await?;
                 return see_other("/admin/maintenance").into_response(cx);
             }
             Err(StoreError::UnknownMonitors(keys)) => unknown_monitors(&keys),
@@ -977,11 +1065,31 @@ pub(crate) async fn update_maintenance(
     let id = path_id(cx)?;
     let state = app(cx);
     let action = format!("/admin/maintenance/{id}");
+    let before = state
+        .store
+        .maintenance(id)
+        .await?
+        .ok_or_else(not_found)?
+        .spec;
     let errors = match input.to_spec() {
         Ok(spec) => match state.store.update_maintenance(id, &spec).await {
             Ok(_) => {
                 state.pages.clear();
                 tracing::info!(maintenance = id, by = %admin.login, "maintenance updated");
+                let details = audit::plain_changes(&before, &spec);
+                audit::record(
+                    state,
+                    audit::admin(&admin),
+                    "maintenance.update",
+                    audit::target("maintenance", id),
+                    format!(
+                        "Updated maintenance {} ({})",
+                        spec.title,
+                        audit::changed_fields(&details).join(", ")
+                    ),
+                    details,
+                )
+                .await?;
                 return see_other("/admin/maintenance").into_response(cx);
             }
             Err(StoreError::MaintenanceNotFound(_)) => return Err(not_found().into()),
@@ -998,10 +1106,20 @@ pub(crate) async fn delete_maintenance(cx: &Cx) -> Result<SeeOther> {
     let admin = require_admin(cx).await?;
     let id = path_id(cx)?;
     let state = app(cx);
+    let window = state.store.maintenance(id).await?.ok_or_else(not_found)?;
     if !state.store.delete_maintenance(id).await? {
         return Err(not_found().into());
     }
     state.pages.clear();
     tracing::info!(maintenance = id, by = %admin.login, "maintenance deleted");
+    audit::record(
+        state,
+        audit::admin(&admin),
+        "maintenance.delete",
+        audit::target("maintenance", id),
+        format!("Cancelled maintenance {}", window.spec.title),
+        json!({ "maintenance": audit::value(&window.spec) }),
+    )
+    .await?;
     Ok(see_other("/admin/maintenance"))
 }

@@ -120,6 +120,7 @@ pub(crate) async fn admin_shell(
                         <a href="/admin/maintenance" aria-current=((section == "maintenance").then_some("page"))>"Maintenance"</a>
                         <a href="/admin/alerts" aria-current=((section == "alerts").then_some("page"))>"Alerts"</a>
                         <a href="/admin/api" aria-current=((section == "api").then_some("page"))>"API"</a>
+                        <a href="/admin/audit" aria-current=((section == "audit").then_some("page"))>"Audit"</a>
                     </nav>
                     <span class="spacer"></span>
                     <div class="user">

@@ -468,6 +468,18 @@ mod tests {
     }
 
     #[test]
+    fn production_style_keys_parse() {
+        // `k<date>:` and standard base64 with `=` padding, as generated for production.
+        let encoded = STANDARD.encode([42u8; 32]);
+        assert!(encoded.ends_with('='));
+        let keys = Keyring::parse(&format!("k20261015:{encoded}")).unwrap();
+        assert_eq!(keys.active_id(), "k20261015");
+        let sealed = keys.encrypt("c.x", "secret");
+        assert!(sealed.starts_with("enc:v1:k20261015:"));
+        assert_eq!(keys.decrypt("c.x", &sealed).unwrap(), "secret");
+    }
+
+    #[test]
     fn keyrings_parse_strictly() {
         assert_eq!(Keyring::parse(" ").unwrap_err(), KeyringError::Empty);
         assert_eq!(

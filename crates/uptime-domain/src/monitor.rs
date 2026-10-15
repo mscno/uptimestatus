@@ -99,6 +99,14 @@ impl MonitorSpec {
     const fn default_active() -> bool {
         true
     }
+
+    /// This spec with every value that may hold a credential masked (see
+    /// [`CheckSpec::redact`]): for read-only API tokens and the audit trail.
+    pub fn redacted(&self) -> Self {
+        let mut spec = self.clone();
+        spec.check.redact();
+        spec
+    }
 }
 
 /// The most tags a monitor carries.

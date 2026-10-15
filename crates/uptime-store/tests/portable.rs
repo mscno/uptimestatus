@@ -468,6 +468,59 @@ async fn plaintext_secrets_are_sealed_on_sqlite_and_turso() {
     }
 }
 
+#[tokio::test]
+async fn audit_events_filter_on_sqlite_and_turso() {
+    use uptime_store::{AuditQuery, AuditTarget, NewAuditEvent};
+    for (scheme, backend) in [("sqlite", Backend::Sqlite), ("turso", Backend::Turso)] {
+        let path = temporary_path(scheme);
+        let store = connect(&format!("{scheme}:{}", path.display()), backend).await;
+        store.migrate().await.unwrap();
+        for (actor, action, at) in [
+            ("alice", "monitor.update", 10),
+            ("bob", "monitor_x.update", 20),
+            ("alice", "page.delete", 30),
+        ] {
+            store
+                .record_audit(
+                    &NewAuditEvent {
+                        actor: actor.into(),
+                        action: action.into(),
+                        target: Some(AuditTarget::new("monitor", 3)),
+                        summary: action.into(),
+                        details: serde_json::json!({ "n": at }),
+                    },
+                    t(at),
+                )
+                .await
+                .unwrap();
+        }
+        let found = store
+            .audit_events(&AuditQuery {
+                actor: Some("alice".into()),
+                action: Some("monitor".into()),
+                target_id: Some("3".into()),
+                limit: 5,
+                ..AuditQuery::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].at, t(10));
+        assert_eq!(found[0].details, serde_json::json!({ "n": 10 }));
+        let page = store
+            .audit_events(&AuditQuery {
+                limit: 1,
+                before: Some(found[0].id + 2),
+                ..AuditQuery::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(page[0].action, "monitor_x.update");
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
 fn temporary_path(backend: &str) -> std::path::PathBuf {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

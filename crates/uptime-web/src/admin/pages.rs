@@ -1,5 +1,6 @@
 //! Status page editor.
 
+use serde_json::{Value, json};
 use topcoat::{
     Result,
     context::Cx,
@@ -23,6 +24,7 @@ use super::{
     views::{checkbox, text_area, text_field},
 };
 use crate::{
+    audit,
     auth::{app, require_admin},
     views::{admin_shell, delete_button},
 };
@@ -192,6 +194,15 @@ pub(crate) async fn create_page(cx: &Cx, Form(input): Form<PageForm>) -> Result<
             Ok(page) => {
                 state.pages.clear();
                 tracing::info!(page = page.id, slug = %spec.slug, by = %admin.login, "status page created");
+                audit::record(
+                    state,
+                    audit::admin(&admin),
+                    "page.create",
+                    audit::target("page", page.id),
+                    format!("Created status page {} (/s/{})", spec.title, spec.slug),
+                    json!({ "page": audit::value(&spec) }),
+                )
+                .await?;
                 return see_other(format!("/admin/pages/{}", page.id)).into_response(cx);
             }
             Err(error) => store_errors(error)?,
@@ -248,11 +259,26 @@ pub(crate) async fn update_page(cx: &Cx, Form(input): Form<PageForm>) -> Result<
     let id = page_id(cx)?;
     let state = app(cx);
     let action = format!("/admin/pages/{id}");
+    let before = state.store.page(id).await?.ok_or_else(not_found)?.spec;
     let errors = match input.to_spec() {
         Ok(spec) => match state.store.update_page(id, &spec).await {
             Ok(_) => {
                 state.pages.clear();
                 tracing::info!(page = id, by = %admin.login, "status page updated");
+                let details = audit::plain_changes(&before, &spec);
+                audit::record(
+                    state,
+                    audit::admin(&admin),
+                    "page.update",
+                    audit::target("page", id),
+                    format!(
+                        "Updated status page {} ({})",
+                        spec.title,
+                        audit::changed_fields(&details).join(", ")
+                    ),
+                    details,
+                )
+                .await?;
                 return see_other(&action).into_response(cx);
             }
             Err(error) => store_errors(error)?,
@@ -267,11 +293,24 @@ pub(crate) async fn delete_page(cx: &Cx) -> Result<SeeOther> {
     let admin = require_admin(cx).await?;
     let id = page_id(cx)?;
     let state = app(cx);
+    let page = state.store.page(id).await?.ok_or_else(not_found)?;
     if !state.store.delete_page(id).await? {
         return Err(not_found().into());
     }
     state.pages.clear();
     tracing::info!(page = id, by = %admin.login, "status page deleted");
+    audit::record(
+        state,
+        audit::admin(&admin),
+        "page.delete",
+        audit::target("page", id),
+        format!(
+            "Deleted status page {} (/s/{})",
+            page.spec.title, page.spec.slug
+        ),
+        json!({ "page": audit::value(&page.spec) }),
+    )
+    .await?;
     Ok(see_other("/admin/pages"))
 }
 
@@ -323,13 +362,24 @@ async fn editor_page(
 /// Every monitor and page as TOML: the format `uptimestatus seed` reads.
 #[route(GET "/admin/export.toml")]
 pub(crate) async fn export_toml(cx: &Cx) -> Result<Response> {
-    require_admin(cx).await?;
-    let text = app(cx)
+    let admin = require_admin(cx).await?;
+    let state = app(cx);
+    let text = state
         .store
         .export_config()
         .await?
         .to_toml()
         .map_err(|e| topcoat::Error::from(std::io::Error::other(e)))?;
+    // The export holds secrets in plaintext.
+    audit::record(
+        state,
+        audit::admin(&admin),
+        "config.export",
+        None,
+        "Exported the configuration as TOML",
+        Value::Null,
+    )
+    .await?;
     (
         [
             (

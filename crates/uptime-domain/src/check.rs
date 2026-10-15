@@ -5,7 +5,10 @@ use std::{fmt, net::IpAddr, str::FromStr};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::{JsonRule, StatusRanges};
+use crate::{
+    JsonRule, StatusRanges,
+    protocol::{CheckError, DatabaseCheck, GrpcCheck, MqttCheck, PingCheck},
+};
 
 /// The kind of check a monitor performs, with its type-specific settings.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,16 +21,40 @@ pub enum CheckSpec {
     Dns(DnsCheck),
     /// The service reports in (`/api/push/{token}`); silence means DOWN.
     Push(PushCheck),
+    /// ICMP echo requests.
+    Ping(PingCheck),
+    /// A PostgreSQL, MySQL or Redis query.
+    Database(DatabaseCheck),
+    /// The standard gRPC health service.
+    Grpc(GrpcCheck),
+    /// An MQTT broker connection, optionally waiting for a message.
+    Mqtt(MqttCheck),
 }
 
 impl CheckSpec {
-    /// `http`, `tcp`, `dns` or `push`.
+    /// The `type` tag: `http`, `tcp`, `dns`, `push`, `ping`, `database`, `grpc` or `mqtt`.
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Http(_) => "http",
             Self::Tcp(_) => "tcp",
             Self::Dns(_) => "dns",
             Self::Push(_) => "push",
+            Self::Ping(_) => "ping",
+            Self::Database(_) => "database",
+            Self::Grpc(_) => "grpc",
+            Self::Mqtt(_) => "mqtt",
+        }
+    }
+
+    /// Settings that cannot work, for the kinds with rules beyond their types
+    /// (HTTP JSON paths are checked by [`JsonRule::validate`]).
+    pub fn validate(&self) -> Result<(), CheckError> {
+        match self {
+            Self::Ping(check) => check.validate(),
+            Self::Database(check) => check.validate(),
+            Self::Grpc(check) => check.validate(),
+            Self::Mqtt(check) => check.validate(),
+            Self::Http(_) | Self::Tcp(_) | Self::Dns(_) | Self::Push(_) => Ok(()),
         }
     }
 }
@@ -490,7 +517,38 @@ mod tests {
 
     #[test]
     fn rejects_unknown_check_types() {
-        assert!(serde_json::from_str::<CheckSpec>(r#"{"type":"ping","host":"x"}"#).is_err());
+        assert!(serde_json::from_str::<CheckSpec>(r#"{"type":"icmp","host":"x"}"#).is_err());
+    }
+
+    #[test]
+    fn protocol_checks_round_trip_with_their_type_tag() {
+        for (json, kind) in [
+            (r#"{"type":"ping","host":"example.com","count":5}"#, "ping"),
+            (
+                r#"{"type":"database","url":"postgres://u:p@db.example.com/app","expect":"1"}"#,
+                "database",
+            ),
+            (
+                r#"{"type":"grpc","url":"https://grpc.example.com/","service":"api.v1.Users"}"#,
+                "grpc",
+            ),
+            (
+                r#"{"type":"mqtt","host":"broker.example.com","tls":true,"topic":"health"}"#,
+                "mqtt",
+            ),
+        ] {
+            let spec: CheckSpec = serde_json::from_str(json).unwrap();
+            assert_eq!(spec.kind(), kind);
+            assert_eq!(spec.validate(), Ok(()), "{json}");
+            let again = serde_json::to_string(&spec).unwrap();
+            assert_eq!(serde_json::from_str::<CheckSpec>(&again).unwrap(), spec);
+        }
+        let bad: CheckSpec =
+            serde_json::from_str(r#"{"type":"database","url":"mongodb://db"}"#).unwrap();
+        assert_eq!(bad.validate(), Err(CheckError::DatabaseUrl));
+        assert!(
+            serde_json::from_str::<CheckSpec>(r#"{"type":"ping","host":"h","cuont":1}"#).is_err()
+        );
     }
 
     #[test]

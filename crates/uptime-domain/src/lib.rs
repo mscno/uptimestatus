@@ -20,6 +20,7 @@ pub mod notify;
 pub mod observation;
 pub mod page;
 pub mod policy;
+pub mod protocol;
 pub mod push;
 pub mod report;
 pub mod routing;
@@ -53,6 +54,7 @@ pub use page::{
     SectionSpec, Theme, Website, bar_level, format_layout, page_status, parse_layout,
 };
 pub use policy::{CheckPolicy, PolicyError};
+pub use protocol::{CheckError, DatabaseCheck, DatabaseEngine, GrpcCheck, MqttCheck, PingCheck};
 pub use push::Push;
 pub use report::Report;
 pub use routing::{QuietHours, Routing, RoutingError};

@@ -61,6 +61,8 @@ pub enum DownReason {
     ExpectedFailure,
     /// DNS: no answer contained the expected value.
     UnexpectedAnswer,
+    /// Database or MQTT: the result did not contain the expected text.
+    ResultMismatch,
 }
 
 impl fmt::Display for DownReason {
@@ -75,6 +77,7 @@ impl fmt::Display for DownReason {
                 f.write_str("expected the target to be unreachable, but it answered")
             }
             Self::UnexpectedAnswer => f.write_str("no DNS answer contains the expected value"),
+            Self::ResultMismatch => f.write_str("the result does not contain the expected text"),
         }
     }
 }
@@ -191,6 +194,12 @@ fn judge_response(
                 && keyword_found != Some(true) =>
         {
             return Err(DownReason::KeywordMissing);
+        }
+        CheckSpec::Database(crate::DatabaseCheck { expect, .. })
+        | CheckSpec::Mqtt(crate::MqttCheck { expect, .. })
+            if expect.as_deref().is_some_and(|e| !e.is_empty()) && keyword_found != Some(true) =>
+        {
+            return Err(DownReason::ResultMismatch);
         }
         _ => return Ok(()),
     };
@@ -480,6 +489,36 @@ mod tests {
             evaluate(&check, &policy, &observe(Some(false))),
             down(None, Some(ms(3)), DownReason::KeywordMissing)
         );
+    }
+
+    #[test]
+    fn database_and_mqtt_results_must_contain_the_expected_text() {
+        let observe = |found| Observation::Responded {
+            latency: ms(4),
+            status_code: None,
+            keyword_found: found,
+            json_matched: None,
+            cert_expires_at: None,
+            response_body: Some("0".into()),
+        };
+        let policy = CheckPolicy::default();
+        let database = CheckSpec::Database(crate::DatabaseCheck {
+            expect: Some("1".into()),
+            ..crate::DatabaseCheck::url("postgres://db")
+        });
+        let mqtt = CheckSpec::Mqtt(crate::MqttCheck {
+            topic: Some("health".into()),
+            expect: Some("ok".into()),
+            ..crate::MqttCheck::connect("broker")
+        });
+        for check in [&database, &mqtt] {
+            assert_eq!(evaluate(check, &policy, &observe(Some(true))), up(None, 4));
+            let verdict = evaluate(check, &policy, &observe(Some(false)));
+            assert_eq!(verdict.reason, Some(DownReason::ResultMismatch));
+            assert_eq!(verdict.response_body.as_deref(), Some("0"));
+        }
+        let plain = CheckSpec::Database(crate::DatabaseCheck::url("redis://cache"));
+        assert_eq!(evaluate(&plain, &policy, &observe(None)), up(None, 4));
     }
 
     #[test]

@@ -53,7 +53,8 @@ pub enum FailureKind {
     Io,
     /// Push monitor: no heartbeat arrived in time.
     Missed,
-    /// Push monitor: the service reported itself down.
+    /// The service reported itself down: a push with `status=down`, or a
+    /// gRPC health status other than SERVING.
     Reported,
 }
 

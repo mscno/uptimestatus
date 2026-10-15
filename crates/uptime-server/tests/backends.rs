@@ -55,6 +55,44 @@ async fn required_local_database_refuses_missing_file_and_report() {
     std::fs::remove_file(&path).unwrap();
 }
 
+/// Production's import report predates later migrations, so the guard only
+/// proves that an import completed; migrations evolve the schema afterwards.
+#[tokio::test]
+async fn required_local_database_accepts_a_report_from_an_earlier_schema() {
+    let path = std::env::temp_dir().join(format!("uptime-required-old-{}.db", std::process::id()));
+    let marker = uptime_transfer::turso::marker_path(&path);
+    let mut config = config(&format!("turso:{}", path.display()), Backend::Turso);
+    uptime_server::serve::connect(&config)
+        .await
+        .unwrap()
+        .migrate()
+        .await
+        .unwrap();
+    config.database.require_existing = true;
+    let report = |format: u32, tables: usize| {
+        serde_json::json!({
+            "format": format,
+            "schema": "an earlier schema",
+            "sha256": "0".repeat(64),
+            "tables": (0..tables)
+                .map(|i| serde_json::json!({"table": format!("t{i}"), "rows": 1, "sha256": "0".repeat(64)}))
+                .collect::<Vec<_>>(),
+        })
+        .to_string()
+    };
+
+    std::fs::write(&marker, report(1, 19)).unwrap();
+    uptime_server::serve::connect(&config).await.unwrap();
+
+    for rejected in [report(2, 19), report(1, 0), "{}".to_owned()] {
+        std::fs::write(&marker, rejected).unwrap();
+        assert!(uptime_server::serve::connect(&config).await.is_err());
+    }
+    for file in [&path, &marker] {
+        std::fs::remove_file(file).unwrap();
+    }
+}
+
 async fn serves(url: &str, backend: Backend) {
     let shutdown = CancellationToken::new();
     let server = tokio::spawn(uptime_server::run(

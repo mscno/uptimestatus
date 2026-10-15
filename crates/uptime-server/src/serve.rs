@@ -42,11 +42,13 @@ pub async fn connect(config: &Config) -> anyhow::Result<Store> {
         );
         let marker = std::fs::read(uptime_transfer::turso::marker_path(path))
             .context("required database has no completed import report")?;
-        let report: uptime_transfer::snapshot::Report = serde_json::from_slice(&marker)?;
+        let report: uptime_transfer::snapshot::Report = serde_json::from_slice(&marker)
+            .context("required database import report is unreadable")?;
+        // The report proves a verified import completed. It records the
+        // schema at import time; later migrations evolve the schema, so it is
+        // not compared with this build's.
         anyhow::ensure!(
-            report.format == 1
-                && report.schema == uptime_transfer::snapshot::schema_hash()
-                && report.tables.len() == uptime_transfer::schema::TABLES.len(),
+            report.format == 1 && !report.tables.is_empty(),
             "required database import report is incompatible"
         );
     }

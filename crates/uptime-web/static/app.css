@@ -394,6 +394,38 @@
 		color: var(--sb-brand);
 	}
 
+	/* ── README badges ──────────────────────────────────────────────── */
+
+	.badges {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+	}
+
+	.badges li {
+		padding: var(--sb-space-3) 0;
+	}
+
+	.badges li + li {
+		border-top: 1px solid var(--sb-border-subtle);
+	}
+
+	.badges img {
+		height: 20px;
+		flex: none;
+	}
+
+	.badges .row + .row {
+		margin-top: var(--sb-space-2);
+		flex-wrap: wrap;
+	}
+
+	.badges code.snippet {
+		flex: 1 1 18rem;
+		min-width: 0;
+		overflow-wrap: anywhere;
+	}
+
 	/* ── Component statuses (manual components and overrides) ──────── */
 
 	.component-statuses {

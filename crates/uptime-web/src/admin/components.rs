@@ -29,8 +29,8 @@ path_param!(key);
 
 /// One component as the console shows it.
 pub(crate) struct ComponentRow {
-    key: String,
-    name: String,
+    pub(crate) key: String,
+    pub(crate) name: String,
     manual: bool,
     /// The status in force: manual, or an active override.
     status: Option<ComponentStatus>,

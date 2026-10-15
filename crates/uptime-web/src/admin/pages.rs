@@ -242,6 +242,13 @@ pub(crate) async fn edit_page(cx: &Cx) -> Result<impl View> {
     let uploads_enabled = app(cx).media.is_some();
     let image_error = super::images::image_error(cx);
     let components = super::components::rows(cx, &page).await?;
+    let badges = super::badges::page_badges(app(cx), &page, |component| {
+        components
+            .iter()
+            .find(|row| row.key == component.key().as_str())
+            .map_or_else(|| component.key().to_string(), |row| row.name.clone())
+    })
+    .await?;
     Ok(view! {
         admin_shell(title: &page.spec.title, admin: &admin, section: "pages",
             <div class="page-head">
@@ -264,6 +271,7 @@ pub(crate) async fn edit_page(cx: &Cx) -> Result<impl View> {
             super::images::images_section(page_id: id, logo: page.logo.clone(), favicon: page.favicon.clone(),
                 enabled: uploads_enabled, error: image_error)
             domains_section(page_id: id, domains: &domains, edge: &edge)
+            super::badges::badges_section(badges: &badges, empty: "")
         )
     })
 }

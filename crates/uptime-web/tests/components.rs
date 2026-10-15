@@ -197,6 +197,63 @@ async fn overrides_replace_a_monitors_status_until_cleared() {
 }
 
 #[tokio::test]
+async fn group_components_can_be_overridden_and_keep_their_members() {
+    let app = TestApp::new().await;
+    let store = app.db.store();
+    let mut member = monitor("api");
+    member.group = Some("prod".into());
+    store
+        .create_monitor(&member, Timestamp::now())
+        .await
+        .unwrap();
+    let group = MonitorSpec {
+        key: "platform".parse().unwrap(),
+        name: "Platform".into(),
+        check: CheckSpec::Group(uptime_domain::GroupCheck {
+            path: "prod".into(),
+            mode: uptime_domain::GroupMode::Any,
+            show_members: true,
+        }),
+        ..monitor("platform")
+    };
+    store
+        .create_monitor(&group, Timestamp::now())
+        .await
+        .unwrap();
+    let page = store
+        .create_page(&PageSpec {
+            slug: "status".parse().unwrap(),
+            title: "Status".into(),
+            description: None,
+            accent: None,
+            theme: Theme::Auto,
+            look: Default::default(),
+            published: true,
+            website: None,
+            custom_css: None,
+            sections: vec![SectionSpec {
+                name: "All".into(),
+                components: vec![ComponentSpec::of_monitor("platform".parse().unwrap(), None)],
+            }],
+        })
+        .await
+        .unwrap();
+    let mut admin = app.signed_in("alice", 1001).await;
+    admin
+        .post_form(
+            &format!("/admin/pages/{}/components/platform/status", page.id),
+            &[("status", "maintenance"), ("note", "Planned migration")],
+        )
+        .await;
+    let mut public = app.client();
+    let shown = public.get("/s/status").await;
+    shown
+        .assert_contains(r#"data-component="platform" data-status="maintenance""#)
+        .assert_contains("Scheduled maintenance")
+        .assert_contains("api service");
+}
+
+#[tokio::test]
 async fn the_api_lists_and_sets_component_statuses() {
     let (app, _) = setup().await;
     let read = token(&app, TokenScope::Read).await;

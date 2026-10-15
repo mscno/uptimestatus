@@ -4,6 +4,7 @@
 //! messages or response bodies. Tabs: the live status (here), maintenance and
 //! incident history ([`history`]).
 
+mod badge;
 mod feed;
 mod history;
 
@@ -42,6 +43,7 @@ use uptime_store::Store;
 use futures_util::Stream;
 use tokio::sync::broadcast::error::RecvError;
 
+pub(crate) use badge::{page_badge, response_badge, status_badge, uptime_badge};
 pub(crate) use feed::status_feed;
 pub(crate) use history::{incident_page, incidents_page, maintenance_page};
 

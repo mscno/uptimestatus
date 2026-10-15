@@ -66,4 +66,8 @@ components = [
 
 [[page.section]]
 name = "Infrastructure"
-components = [{ monitor = "cloudflare-dns", label = "DNS" }]
+components = [
+  { monitor = "cloudflare-dns", label = "DNS" },
+  # A manual component: no monitor; set its status in the console or the API.
+  { manual = "email", label = "Email delivery", description = "Transactional email" },
+]

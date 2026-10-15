@@ -2,6 +2,7 @@
 
 mod alerts;
 mod audit_trail;
+mod badges;
 mod bulk;
 mod components;
 mod domains;
@@ -623,6 +624,7 @@ pub(crate) async fn monitor_detail(cx: &Cx) -> Result<impl View> {
         .and_then(|q| Range::parse(q.range.as_deref()?))
         .unwrap_or_default();
     let metrics = Metrics::load(&state.store, id, range, now).await?;
+    let badges = badges::monitor_badges(state, &monitor.spec.key, &monitor.spec.name).await?;
     let correction = CorrectionForm::last_hour(now);
     let corrected = topcoat::router::query_params::<CorrectionQuery>(cx)
         .ok()
@@ -896,6 +898,8 @@ pub(crate) async fn monitor_detail(cx: &Cx) -> Result<impl View> {
             }
             recent_checks(checks: &checks, now: now)
             uptime_corrections(action: &excuse_url, form: &correction, error: None)
+            badges::badges_section(badges: &badges,
+                empty: "Add this monitor to a status page to get README badges.")
             <div data-init=(format!("@get('{base}/live')"))></div>
         )
     })

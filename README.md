@@ -20,7 +20,9 @@ or a Docker container, with SQLite, PostgreSQL or Turso for storage.
   the admin timeline keeps errors, statuses and response excerpts, including the original
   attempt and retries.
 - Public status pages with current and previous incidents, 90-day uptime bars, response-time
-  charts, Atom feeds, custom domains, logos and a choice of pixel or clean styling.
+  charts, Atom feeds, custom domains, logos and a choice of pixel or clean styling. Manual
+  components and status overrides, custom CSS and README badges; see
+  [Status pages](#status-pages).
 - Slack, Discord and signed webhook alerts, with retries, quiet hours and escalation delays.
 - TLS certificate-expiry warnings and one-off or recurring maintenance windows.
 - A live admin console with GitHub sign-in, tags, groups, search, bulk actions and "Test now".
@@ -66,6 +68,8 @@ see credentials (auth secrets, credential-looking headers, push tokens) redacted
 | `GET /api/v1/monitors/{key}/checks?limit=` | read | Recent results, newest first |
 | `GET /api/v1/config` | read | All monitors and pages, in the shape `PUT` accepts |
 | `GET`, `PUT`, `DELETE /api/v1/pages/{slug}` | read / write | Status pages (`section` layout as in the TOML) |
+| `GET /api/v1/pages/{slug}/components` | read | Components with their manual status or override, when and by whom it was set, and the note |
+| `PUT /api/v1/pages/{slug}/components/{key}/status` | write | `{"status": "degraded", "note": "…"}`: a manual component's status, or a monitor component's override; `{"status": null}` clears an override |
 | `POST /api/v1/incidents` | write | `{"title", "message", "impact", "status", "monitors": ["key"]}` |
 | `POST /api/v1/incidents/{id}/updates` | write | `{"status", "message"}` |
 
@@ -300,6 +304,57 @@ policy = { retries = 0 }    # members already confirm their own failures
   simply skips itself.
 - `show_members` lists the members' names and states under the group on status pages (never
   their targets).
+
+### Status pages
+
+A page's layout lists monitors by key and, for things no check can see (a vendor, a
+mailbox, a process), **manual components**: `manual:key | Display name | Description` in the
+editor, `{ manual = "cdn", label = "CDN", description = "…" }` in TOML. Manual keys follow the
+monitor key rules and must not repeat or match a monitor key on the same page.
+
+Admins set a manual component's status (operational, degraded, partial outage, major outage,
+maintenance) with one click from the page editor or **Status pages → Components**, or with
+`PUT /api/v1/pages/{slug}/components/{key}/status`. A monitor component can be **overridden**
+the same way (say, degraded while checks still pass) until the override is cleared. Every
+change keeps who made it and an optional note, is audited, and refreshes open pages at once.
+
+That history is the component's uptime, measured in time rather than checks: degraded counts
+as up (like a slow check), a partial outage counts half its time as down, a major outage as
+down, and maintenance is left out. A day with degraded or partial-outage time shows at least a
+warning bar. An override replaces its share of a monitor's day; the rest still comes from its
+checks. The page headline is the worst of its monitors, its manual statuses and any open
+incident; a single component in major outage makes the headline a major outage.
+
+**Custom CSS** (page editor, `custom_css` in TOML and the API; up to 64 KiB) is served as
+`/s/{slug}/custom.css` after the built-in styles. `javascript:` URLs, `expression(`,
+`-moz-binding`, `behavior:`, `</style` and `@import` of anything but `https://` are refused.
+Stable hooks to target:
+
+| Hook | What |
+|---|---|
+| `html[data-look="clean"]` | The clean look (the pixel look has no attribute) |
+| `.status-page`, `.status-shell`, `.status-header`, `.status-logo`, `.status-tabs`, `.footer` | Page frame |
+| `.banner` | The headline |
+| `.notice` | Open incidents and maintenance |
+| `.section`, `.component`, `.component-head`, `.component-description` | Sections and components |
+| `.component[data-component="api"]` | One component, by key |
+| `.component[data-status="down"]` | By status: monitor states (`up`, `degraded`, `pending`, `down`, `maintenance`, `paused`, `unknown`) or manual statuses (`operational`, `partial_outage`, `major_outage`, …) |
+| `.bars`, `.bar-up`, `.bar-warn`, `.bar-down`, `.bar-none` | The 90-day bars |
+| `--accent`, `--up`, `--degraded`, `--pending`, `--down`, `--maintenance` | Colors, on `:root` |
+
+**README badges** (shields style; copy them from the page editor or a monitor's page):
+
+| Badge | |
+|---|---|
+| `/s/{slug}/badge.svg` | The page's overall status |
+| `/s/{slug}/badge/{key}/status.svg` | A component's status (manual status or override first) |
+| `/s/{slug}/badge/{key}/uptime.svg?window=30d` | Uptime over `24h`, `7d`, `30d` (default) or `90d` |
+| `/s/{slug}/badge/{key}/response.svg` | A monitor component's median response time, last 24 hours |
+
+All take `?style=flat` (default), `flat-square` or `for-the-badge`, and `?label=` to replace
+the left-hand text. They work on custom domains too (`/badge.svg`, `/badge/{key}/…`), are
+cached for a minute with ETags, and exist only for components on a page: other keys are a
+404, and drafts show badges only to signed-in admins.
 
 ## Deploying
 

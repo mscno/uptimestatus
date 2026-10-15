@@ -1675,6 +1675,18 @@
 		color: var(--sb-text-2);
 	}
 
+	pre.response {
+		max-height: 24rem;
+		overflow: auto;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+		background: var(--sb-surface-inset);
+		border: 1px solid var(--sb-border);
+		border-radius: var(--sb-radius-sm);
+		padding: var(--sb-space-2) var(--sb-space-3);
+		margin: var(--sb-space-2) 0 0;
+	}
+
 	pre.dns {
 		font-size: var(--sb-font-size-1);
 		background: var(--sb-surface-inset);

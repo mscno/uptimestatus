@@ -29,6 +29,11 @@ pub fn when(at: Timestamp) -> String {
     at.strftime("%b %-d, %H:%M UTC").to_string()
 }
 
+/// A calendar time to the second, in UTC: "Mar 1, 22:00:05 UTC".
+pub fn when_precise(at: Timestamp) -> String {
+    at.strftime("%b %-d, %H:%M:%S UTC").to_string()
+}
+
 /// A calendar time with the year, in UTC: "Mar 1, 2031, 22:00 UTC".
 pub fn when_dated(at: Timestamp) -> String {
     at.strftime("%b %-d, %Y, %H:%M UTC").to_string()

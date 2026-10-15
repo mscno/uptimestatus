@@ -514,7 +514,7 @@ async fn automatic_incidents_are_public_while_check_diagnostics_stay_in_admin() 
     let detail = admin
         .get(&format!("/admin/incidents/{}", incident.id))
         .await;
-    detail.assert_contains("HTTP 503");
+    detail.assert_contains("503 ×2");
     detail.assert_contains("private-upstream-response");
     assert!(
         !detail
@@ -541,5 +541,111 @@ async fn automatic_incidents_are_public_while_check_diagnostics_stay_in_admin() 
             .await
             .status,
         StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn admins_review_an_outage_check_by_check() {
+    use uptime_domain::{DownReason, FailureKind, Health, MonitorState, Runtime, Verdict};
+    let app = setup().await;
+    let store = app.db.store();
+    let monitor = store
+        .list_monitors()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|m| m.spec.key.as_str() == "api")
+        .unwrap();
+    let start = Timestamp::from_second(1_800_000_000).unwrap();
+    let refused = DownReason::Probe {
+        kind: FailureKind::Refused,
+        message: "tcp connect error: Connection refused (os error 111)".into(),
+    };
+    for (offset, state, failures, code, reason, body) in [
+        (
+            0,
+            MonitorState::Pending,
+            1,
+            Some(503),
+            Some(DownReason::UnexpectedStatus(503)),
+            Some("<h1>Service Unavailable</h1>"),
+        ),
+        (
+            20,
+            MonitorState::Down,
+            2,
+            Some(503),
+            Some(DownReason::UnexpectedStatus(503)),
+            Some("fly-proxy: no healthy machines"),
+        ),
+        (40, MonitorState::Down, 3, None, Some(refused), None),
+        (100, MonitorState::Up, 0, Some(200), None, None),
+    ] {
+        let at = start + SignedDuration::from_secs(offset);
+        store
+            .record_check(&uptime_store::CheckRecord {
+                monitor_id: monitor.id,
+                scheduled_for: at,
+                checked_at: at,
+                verdict: Verdict {
+                    health: if code == Some(200) {
+                        Health::Up
+                    } else {
+                        Health::Down
+                    },
+                    latency: code.map(|_| std::time::Duration::from_millis(87)),
+                    status_code: code,
+                    reason,
+                    response_body: body.map(Into::into),
+                },
+                runtime: Runtime {
+                    state,
+                    consecutive_failures: failures,
+                },
+                transition: None,
+                cert: None,
+                next_run_at: at + SignedDuration::from_secs(20),
+                region: "fra".into(),
+            })
+            .await
+            .unwrap();
+    }
+    let incident = store.list_incidents(10).await.unwrap().remove(0);
+    let mut admin = app.signed_in("alice", 1001).await;
+    let detail = admin
+        .get(&format!("/admin/incidents/{}", incident.id))
+        .await;
+    assert_eq!(detail.status, StatusCode::OK);
+
+    // The summary: when it broke, why, and when it came back.
+    detail
+        .assert_contains("Outage")
+        .assert_contains("api.example.com:443")
+        .assert_contains("First failure")
+        .assert_contains("Jan 15, 08:00:00 UTC")
+        .assert_contains("Confirmed")
+        .assert_contains("Jan 15, 08:00:20 UTC")
+        .assert_contains("Recovered")
+        .assert_contains("Jan 15, 08:01:40 UTC")
+        .assert_contains("Down for")
+        .assert_contains("1m 40s")
+        .assert_contains("3 failed")
+        .assert_contains("unexpected status 503 ×2")
+        .assert_contains("refused: tcp connect error: Connection refused (os error 111) ×1")
+        .assert_contains("503 ×2");
+    // Every check, with its response.
+    detail
+        .assert_contains("Checks")
+        .assert_contains("08:00:40")
+        .assert_contains("87ms")
+        .assert_contains("fly-proxy: no healthy machines")
+        .assert_contains("&lt;h1&gt;Service Unavailable&lt;/h1&gt;");
+    // Diagnostics are not repeated in the narrative timeline.
+    assert_eq!(
+        detail
+            .body
+            .matches("fly-proxy: no healthy machines")
+            .count(),
+        1
     );
 }

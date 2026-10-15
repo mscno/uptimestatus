@@ -710,7 +710,7 @@ async fn incidents_keep_original_retry_and_later_failures_until_recovery() {
     assert_eq!(resolved.status, uptime_domain::IncidentStatus::Resolved);
     assert_eq!(resolved.resolved_at, Some(plus(start, 280)));
     assert_eq!(resolved.updates[0].body, "incident recovered after 4m 20s.");
-    assert_eq!(resolved.updates.len(), 7);
+    assert_eq!(resolved.updates.len(), 8, "with the recovering check");
     store
         .prune_checks_before(plus(start, 300), 10)
         .await

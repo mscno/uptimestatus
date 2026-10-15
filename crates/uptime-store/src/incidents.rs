@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 
 use jiff::Timestamp;
-use uptime_domain::{Impact, IncidentKind, IncidentStatus, MonitorId, MonitorKey, format_duration};
+use uptime_domain::{
+    Health, Impact, IncidentKind, IncidentStatus, MonitorId, MonitorKey, format_duration,
+};
 
 use crate::{
     Result, Store, StoreError, convert,
@@ -14,6 +16,12 @@ use crate::{
     pages::resolve_keys,
     results::{CheckRecord, StoredCheck, stored_check},
 };
+
+/// How far before an incident opened its failure streak may have started
+/// (pending retries).
+const STREAK_LOOKBACK: jiff::SignedDuration = jiff::SignedDuration::from_hours(1);
+/// Most raw results [`Store::incident_checks`] reads for one incident.
+const STREAK_LIMIT: usize = 2_000;
 
 /// What an admin declares.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -218,6 +226,62 @@ impl Store {
         self.public(records).await
     }
 
+    /// The checks behind an automatic incident, oldest first: the whole
+    /// failure streak through the recovering check. Uses the diagnostics kept
+    /// with the incident, plus raw history while it is retained (incidents
+    /// from before 0.1.2 kept none). Declared incidents have none.
+    pub async fn incident_checks(&self, incident: &Incident) -> Result<Vec<StoredCheck>> {
+        let mut checks: Vec<StoredCheck> = incident
+            .updates
+            .iter()
+            .filter_map(|u| u.check.clone())
+            .collect();
+        if let (IncidentKind::Auto, [monitor]) = (incident.kind, incident.monitor_ids.as_slice()) {
+            for check in self.streak_checks(*monitor, incident).await? {
+                let seen = checks
+                    .iter()
+                    .any(|c| c.checked_at == check.checked_at && c.region == check.region);
+                if !seen {
+                    checks.push(check);
+                }
+            }
+        }
+        checks.sort_by_key(|c| c.checked_at);
+        Ok(checks)
+    }
+
+    /// Raw results from the failure streak that opened `incident` until it
+    /// resolved (or now).
+    async fn streak_checks(
+        &self,
+        monitor: MonitorId,
+        incident: &Incident,
+    ) -> Result<Vec<StoredCheck>> {
+        let fields = CheckResultRecord::fields();
+        let mut filter = fields.monitor_id().eq(monitor.0).and(
+            fields
+                .checked_at()
+                .ge(incident.started_at - STREAK_LOOKBACK),
+        );
+        if let Some(resolved_at) = incident.resolved_at {
+            filter = filter.and(fields.checked_at().le(resolved_at));
+        }
+        let rows = CheckResultRecord::filter(filter)
+            .order_by(fields.checked_at().asc())
+            .limit(STREAK_LIMIT)
+            .exec(&mut self.db())
+            .await?
+            .into_iter()
+            .map(stored_check)
+            .collect::<Result<Vec<_>>>()?;
+        // The streak starts after the last passing check before the incident opened.
+        let start = rows
+            .iter()
+            .rposition(|c| c.checked_at < incident.started_at && c.health != Health::Down)
+            .map_or(0, |i| i + 1);
+        Ok(rows.into_iter().skip(start).collect())
+    }
+
     /// Incidents linked to any of `monitors`.
     async fn incident_ids_for(&self, monitors: &[MonitorId]) -> Result<Vec<i64>> {
         if monitors.is_empty() {
@@ -419,16 +483,18 @@ async fn add_check_update(
     Ok(())
 }
 
-/// Resolves the monitor's open automatic incident, if any.
+/// Resolves the monitor's open automatic incident, if any, keeping the
+/// recovering check with its diagnostics.
 pub(crate) async fn resolve_auto(
     tx: &mut toasty::Transaction<'_>,
-    monitor_id: i64,
-    name: &str,
-    at: Timestamp,
+    monitor: &MonitorRecord,
+    recovery: CheckResultRecord,
 ) -> Result<()> {
-    let Some(incident) = open_auto_incident(tx, monitor_id).await? else {
+    let Some(incident) = open_auto_incident(tx, monitor.id).await? else {
         return Ok(());
     };
+    let (name, at) = (monitor.name.as_str(), recovery.checked_at);
+    add_check_update(tx, incident.id, IncidentStatus::Resolved, recovery).await?;
     IncidentRecord::update_by_id(incident.id)
         .status(IncidentStatus::Resolved.as_str())
         .resolved_at(Some(at))

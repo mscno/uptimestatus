@@ -17,18 +17,20 @@ use topcoat::{
     },
     view::{View, ViewExt as _, component, view},
 };
-use uptime_domain::{Impact, IncidentKind, IncidentStatus, MaintenanceSpec, MonitorKey, Repeat};
-use uptime_store::{AdminUser, Incident, Monitor, NewIncident, StoreError};
+use uptime_domain::{
+    Health, Impact, IncidentKind, IncidentStatus, MaintenanceSpec, MonitorKey, Repeat,
+};
+use uptime_store::{AdminUser, Incident, Monitor, NewIncident, StoreError, StoredCheck};
 
 use super::{
     Id,
     form::FormErrors,
-    views::{checkbox, text_area, text_field},
+    views::{checkbox, target, text_area, text_field},
 };
 use crate::{
     auth::{app, require_admin},
     fmt,
-    views::{admin_shell, ago, delete_button},
+    views::{admin_shell, ago, delete_button, health_pill, state_pill},
 };
 
 fn path_id(cx: &Cx) -> Result<i64> {
@@ -320,15 +322,185 @@ async fn load_incident(cx: &Cx) -> Result<Incident> {
         .ok_or_else(not_found)?)
 }
 
+/// What an incident's checks say: when it broke, why, and when it came back.
+struct Outage<'a> {
+    first_failure: Option<Timestamp>,
+    /// The check that brought the monitor back, once resolved.
+    recovery: Option<&'a StoredCheck>,
+    failed: usize,
+    regions: Vec<&'a str>,
+    /// Error texts, most frequent first.
+    causes: Vec<(String, usize)>,
+    /// Status codes of failed checks, most frequent first.
+    codes: Vec<(u16, usize)>,
+}
+
+impl<'a> Outage<'a> {
+    fn of(checks: &'a [StoredCheck]) -> Self {
+        let failures: Vec<&StoredCheck> =
+            checks.iter().filter(|c| c.health == Health::Down).collect();
+        let mut regions: Vec<&str> = checks.iter().map(|c| c.region.as_str()).collect();
+        regions.sort_unstable();
+        regions.dedup();
+        Self {
+            first_failure: failures.first().map(|c| c.checked_at),
+            recovery: checks.last().filter(|c| c.health != Health::Down),
+            failed: failures.len(),
+            regions,
+            causes: tally(
+                failures
+                    .iter()
+                    .map(|c| c.error.clone().unwrap_or_else(|| "check failed".to_owned())),
+            ),
+            codes: tally(failures.iter().filter_map(|c| c.status_code)),
+        }
+    }
+}
+
+/// Counts of each distinct value, most frequent first (ties in first-seen order).
+fn tally<T: PartialEq>(values: impl Iterator<Item = T>) -> Vec<(T, usize)> {
+    let mut counts: Vec<(T, usize)> = Vec::new();
+    for value in values {
+        match counts.iter_mut().find(|(seen, _)| *seen == value) {
+            Some((_, count)) => *count += 1,
+            None => counts.push((value, 1)),
+        }
+    }
+    counts.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+    counts
+}
+
+fn check_outcome(check: &StoredCheck) -> String {
+    let code = check.status_code.map(|c| format!("HTTP {c}"));
+    let latency = check.latency_ms.map(|ms| format!("{ms}ms"));
+    let parts: Vec<String> = code.into_iter().chain(latency).collect();
+    if parts.is_empty() {
+        "no response".to_owned()
+    } else {
+        parts.join(" in ")
+    }
+}
+
+/// The incident at a glance: affected monitors, timing and causes.
+#[component]
+async fn outage_summary(
+    incident: &Incident,
+    affected: &[Monitor],
+    checks: &[StoredCheck],
+    now: Timestamp,
+) -> Result<impl View> {
+    let outage = Outage::of(checks);
+    let began = outage.first_failure.unwrap_or(incident.started_at);
+    let ended = incident.resolved_at.unwrap_or(now);
+    let lasted = fmt::duration(ended.duration_since(began).unsigned_abs());
+    let monitors: Vec<(String, String, String)> = affected
+        .iter()
+        .map(|m| {
+            (
+                format!("/admin/monitors/{}", m.id),
+                m.spec.name.clone(),
+                target(&m.spec.check),
+            )
+        })
+        .collect();
+    let causes: Vec<String> = outage
+        .causes
+        .iter()
+        .map(|(cause, n)| format!("{cause} ×{n}"))
+        .collect();
+    let codes = outage
+        .codes
+        .iter()
+        .map(|(code, n)| format!("{code} ×{n}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let auto = incident.kind == IncidentKind::Auto;
+    Ok(view! {
+        <div class="card">
+            <h2>(if auto { "Outage" } else { "Summary" })</h2>
+            <dl class="facts">
+                <dt>"Affects"</dt>
+                <dd>
+                    for (href, name, target) in &monitors {
+                        <div><a href=(href)>(name.as_str())</a> " " <span class="small muted">(target.as_str())</span></div>
+                    }
+                    if monitors.is_empty() { "—" }
+                </dd>
+                if outage.first_failure.is_some() {
+                    <dt>"First failure"</dt><dd>(fmt::when_precise(began))</dd>
+                }
+                <dt>(if auto { "Confirmed" } else { "Started" })</dt>
+                <dd>(fmt::when_precise(incident.started_at))</dd>
+                <dt>(if auto { "Recovered" } else { "Resolved" })</dt>
+                <dd>
+                    if let Some(at) = incident.resolved_at {
+                        (fmt::when_precise(at))
+                        if let Some(check) = outage.recovery {
+                            <span class="small muted">" · " (check_outcome(check)) " from " (check.region.as_str())</span>
+                        }
+                    } else {
+                        <span class="pill pill-down">"Ongoing"</span>
+                    }
+                </dd>
+                <dt>(if auto { "Down for" } else { "Duration" })</dt>
+                <dd>(lasted.as_str()) if incident.resolved_at.is_none() { " so far" }</dd>
+                if !checks.is_empty() {
+                    <dt>"Checks"</dt>
+                    <dd>(format!("{} failed", outage.failed)) " · " (outage.regions.join(", "))</dd>
+                    <dt>"Cause"</dt>
+                    <dd class="small">
+                        for cause in &causes { <div>(cause.as_str())</div> }
+                    </dd>
+                    <dt>"Status codes"</dt>
+                    <dd>(if codes.is_empty() { "none (no response)".to_owned() } else { codes.clone() })</dd>
+                }
+            </dl>
+        </div>
+    })
+}
+
+/// Every check in the outage, with its error and response.
+#[component]
+async fn incident_checks(checks: &[StoredCheck]) -> Result<impl View> {
+    Ok(view! {
+        <div class="card table-wrap">
+            <h2>"Checks"</h2>
+            <p class="small muted">"The failure streak through the recovering check. Visible only here; status pages show the timeline."</p>
+            <table class="list">
+                <thead><tr><th>"Checked"</th><th>"Result"</th><th>"State"</th><th class="hide-sm">"Code"</th><th class="num">"Latency"</th><th class="hide-sm">"Region"</th><th>"Error"</th></tr></thead>
+                <tbody>
+                    for check in checks {
+                        <tr>
+                            <td class="small when">(fmt::when_precise(check.checked_at))</td>
+                            <td>health_pill(health: check.health)</td>
+                            <td>state_pill(state: check.state_after)</td>
+                            <td class="hide-sm">(check.status_code.map_or("—".into(), |c| c.to_string()))</td>
+                            <td class="num">(check.latency_ms.map_or("—".into(), |ms| format!("{ms}ms")))</td>
+                            <td class="small muted hide-sm">(check.region.as_str())</td>
+                            <td class="small">
+                                (check.error.clone().unwrap_or_else(|| "—".into()))
+                                if let Some(body) = &check.response_body {
+                                    <details><summary>(format!("Response ({} bytes)", body.len()))</summary><pre class="response">(body.as_str())</pre></details>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    })
+}
+
 #[page("/admin/incidents/{id}")]
 pub(crate) async fn incident_detail(cx: &Cx) -> Result<impl View> {
     let admin = require_admin(cx).await?;
     let incident = load_incident(cx).await?;
-    let monitors = app(cx).store.list_monitors().await?;
-    let affected: Vec<String> = monitors
-        .iter()
+    let state = app(cx);
+    let checks = state.store.incident_checks(&incident).await?;
+    let monitors = state.store.list_monitors().await?;
+    let affected: Vec<Monitor> = monitors
+        .into_iter()
         .filter(|m| incident.monitor_ids.contains(&m.id))
-        .map(|m| m.spec.name.clone())
         .collect();
     let base = format!("/admin/incidents/{}", incident.id);
     let delete_url = format!("{base}/delete");
@@ -338,6 +510,13 @@ pub(crate) async fn incident_detail(cx: &Cx) -> Result<impl View> {
         IncidentStatus::Identified => IncidentStatus::Monitoring,
         IncidentStatus::Monitoring | IncidentStatus::Resolved => IncidentStatus::Resolved,
     };
+    // Check diagnostics have their own table.
+    let updates: Vec<_> = incident
+        .updates
+        .iter()
+        .filter(|u| u.check.is_none())
+        .cloned()
+        .collect();
     let now = Timestamp::now();
     let no_errors = FormErrors::default();
     Ok(view! {
@@ -351,44 +530,33 @@ pub(crate) async fn incident_detail(cx: &Cx) -> Result<impl View> {
                     body: "It disappears from status pages and the incident history.")
             </div>
             <div class="cols">
+                outage_summary(incident: &incident, affected: &affected, checks: &checks, now: now)
                 <div class="card">
                     <h2>"Timeline"</h2>
                     <ol class="timeline">
-                        for update in &incident.updates {
+                        for update in &updates {
                             <li>
                                 <span class=(status_pill(update.status))>(update.status.label())</span>
                                 " "
                                 <span class="small muted">ago(at: update.created_at, now: now) " · " (fmt::when(update.created_at))</span>
                                 <p>(update.body.as_str())</p>
-                                if let Some(check) = &update.check {
-                                    <p class="small muted">
-                                        "Check: " (check.state_after.as_str()) " · Region: " (check.region.as_str())
-                                        if let Some(code) = check.status_code { " · HTTP " (code) }
-                                        if let Some(ms) = check.latency_ms { " · " (ms) " ms" }
-                                        if let Some(kind) = check.error_kind { " · " (kind.as_str()) }
-                                    </p>
-                                    if let Some(body) = &check.response_body {
-                                        <details><summary>"Response excerpt"</summary><pre>(body.as_str())</pre></details>
-                                    }
-                                }
-
                             </li>
                         }
                     </ol>
-                    <p class="small muted">
-                        (if incident.kind == IncidentKind::Auto { "Opened automatically. Check diagnostics are visible only here." } else { "Shown on status pages with an affected monitor." })
-                        " Affects: " (affected.join(", "))
-                    </p>
+                    <p class="small muted">"Shown on status pages with an affected monitor."</p>
                 </div>
-                <div class="card">
-                    <h2>"Post an update"</h2>
-                    <form method="post" action=(update_url)>
-                        select_field(name: "status", label: "Status", options: statuses(), selected: next_status.as_str())
-                        text_area(name: "message", label: "Message", value: "", errors: &no_errors,
-                            hint: "What changed, what visitors should expect.")
-                        <div class="actions"><button class="btn btn-primary" type="submit">"Post update"</button></div>
-                    </form>
-                </div>
+            </div>
+            if !checks.is_empty() {
+                incident_checks(checks: &checks)
+            }
+            <div class="card">
+                <h2>"Post an update"</h2>
+                <form method="post" action=(update_url)>
+                    select_field(name: "status", label: "Status", options: statuses(), selected: next_status.as_str())
+                    text_area(name: "message", label: "Message", value: "", errors: &no_errors,
+                        hint: "What changed, what visitors should expect.")
+                    <div class="actions"><button class="btn btn-primary" type="submit">"Post update"</button></div>
+                </form>
             </div>
         )
     })

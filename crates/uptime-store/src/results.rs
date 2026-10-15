@@ -176,7 +176,7 @@ impl Store {
             let monitor = MonitorRecord::filter_by_id(record.monitor_id.0)
                 .get(&mut tx)
                 .await?;
-            incidents::resolve_auto(&mut tx, monitor.id, &monitor.name, record.checked_at).await?;
+            incidents::resolve_auto(&mut tx, &monitor, stored).await?;
         }
         if let Some(transition) = record.transition {
             let monitor = MonitorRecord::filter_by_id(record.monitor_id.0)

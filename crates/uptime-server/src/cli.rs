@@ -37,11 +37,26 @@ pub enum Command {
         path: PathBuf,
     },
     /// Write every monitor and status page as TOML (the format `seed` reads).
+    /// Secrets are written in plaintext.
     Export {
         /// Write here instead of standard output.
         #[arg(long, short)]
         output: Option<PathBuf>,
     },
+    /// Manage the keys that encrypt secrets at rest.
+    Secrets {
+        #[command(subcommand)]
+        action: SecretsAction,
+    },
+}
+
+#[derive(Debug, PartialEq, Eq, Subcommand)]
+pub enum SecretsAction {
+    /// Print a new random key entry for `secrets.keys` (needs no database).
+    GenerateKey,
+    /// Re-encrypt every secret with the first key in `secrets.keys` and seal
+    /// any plaintext; afterwards, older keys can be removed.
+    Rotate,
 }
 
 impl Cli {

@@ -9,6 +9,9 @@ pub enum StoreError {
     #[error("invalid database configuration: {0}")]
     Configuration(String),
 
+    #[error(transparent)]
+    Secret(#[from] crate::secrets::OpenError),
+
     #[error("a monitor with key `{0}` already exists")]
     DuplicateKey(MonitorKey),
 

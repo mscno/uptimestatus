@@ -39,6 +39,7 @@ pub static TABLES: &[Table] = &[
             ("group_path", Kind::Text),
             ("created_at", Kind::Timestamp),
             ("updated_at", Kind::Timestamp),
+            ("push_token_index", Kind::Text),
         ],
         keys: &["id"],
     },

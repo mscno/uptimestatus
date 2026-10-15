@@ -318,8 +318,10 @@ async fn backend_selection_rejects_mismatched_urls_and_tokens() {
 #[tokio::test]
 async fn postgres_jsonb_upgrade_preserves_existing_monitor_data() {
     let db = TestDb::new().await;
-    let monitor = db
-        .store()
+    // Databases from before 0018 held plain JSON (secrets were sealed later).
+    let monitor = Store::connect(db.url(), &ConnectOptions::default())
+        .await
+        .unwrap()
         .create_monitor(&http_spec("legacy"), t(0))
         .await
         .unwrap();
@@ -379,6 +381,89 @@ async fn sqlite_and_turso_claims_are_atomic() {
         }
         assert_eq!(ids.len(), 24);
         drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn plaintext_secrets_are_sealed_on_sqlite_and_turso() {
+    for (scheme, backend) in [("sqlite", Backend::Sqlite), ("turso", Backend::Turso)] {
+        let path = temporary_path(scheme);
+        let url = format!("{scheme}:{}", path.display());
+        let legacy = connect(&url, backend).await;
+        legacy.migrate().await.unwrap();
+        let push = legacy
+            .create_monitor(
+                &uptime_domain::MonitorSpec {
+                    check: CheckSpec::Push(PushCheck {
+                        token: "push-secret".into(),
+                    }),
+                    ..http_spec("cron")
+                },
+                t(0),
+            )
+            .await
+            .unwrap();
+        let api = legacy
+            .create_monitor(&http_spec("api"), t(0))
+            .await
+            .unwrap();
+        for (at, state, failures) in [(10, MonitorState::Pending, 1), (20, MonitorState::Down, 2)] {
+            legacy
+                .record_check(&CheckRecord {
+                    monitor_id: api.id,
+                    scheduled_for: t(at),
+                    checked_at: t(at),
+                    verdict: Verdict {
+                        health: Health::Down,
+                        latency: None,
+                        status_code: Some(500),
+                        reason: Some(uptime_domain::DownReason::UnexpectedStatus(500)),
+                        response_body: Some("private body".into()),
+                    },
+                    runtime: Runtime {
+                        state,
+                        consecutive_failures: failures,
+                    },
+                    transition: None,
+                    cert: None,
+                    next_run_at: t(at + 60),
+                    region: "test".into(),
+                })
+                .await
+                .unwrap();
+        }
+        drop(legacy);
+
+        let store = connect(&url, backend)
+            .await
+            .with_keyring(uptime_testkit::test_keyring());
+        assert!(store.plaintext_secrets().await.unwrap() >= 3);
+        assert_eq!(store.reseal_config().await.unwrap().indexed, 1);
+        let ping = Push {
+            at: t(30),
+            up: true,
+            message: None,
+            ping: None,
+        };
+        assert_eq!(
+            store.record_push("push-secret", &ping).await.unwrap(),
+            Some(push.id)
+        );
+        assert!(store.reseal().await.unwrap().total() >= 2);
+        assert_eq!(store.plaintext_secrets().await.unwrap(), 0);
+        assert_eq!(
+            store.recent_checks(api.id, 1).await.unwrap()[0]
+                .response_body
+                .as_deref(),
+            Some("private body")
+        );
+        let incident = store.list_incidents(1).await.unwrap().remove(0);
+        assert!(incident.updates.iter().any(|u| u.check.is_some()));
+        drop(store);
+        let unkeyed = connect(&url, backend).await;
+        assert!(unkeyed.ensure_secrets_readable().await.is_err());
+        drop(unkeyed);
         std::fs::remove_file(path).unwrap();
     }
 }

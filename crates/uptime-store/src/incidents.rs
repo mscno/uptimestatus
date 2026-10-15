@@ -15,7 +15,11 @@ use crate::{
     },
     pages::resolve_keys,
     results::{CheckRecord, StoredCheck, stored_check},
+    secrets::Sealer,
 };
+
+/// Associated data for sealed check diagnostics.
+const CHECK_JSON: &str = "incident_updates.check_json";
 
 /// How far before an incident opened its failure streak may have started
 /// (pending retries).
@@ -270,7 +274,7 @@ impl Store {
             .exec(&mut self.db())
             .await?
             .into_iter()
-            .map(stored_check)
+            .map(|record| stored_check(self.sealer(), record))
             .collect::<Result<Vec<_>>>()?;
         // The streak starts after the last passing check before the incident opened.
         let start = rows
@@ -333,12 +337,12 @@ impl Store {
                     id: record.id,
                     status: convert::parse("incident_updates.status", &record.status)?,
                     body: record.body,
-                    check: record
-                        .check_json
-                        .as_deref()
+                    check: self
+                        .sealer()
+                        .open_opt(CHECK_JSON, record.check_json.as_deref())?
                         .map(|json| {
-                            serde_json::from_str(json)
-                                .map_err(|e| StoreError::corrupt("incident_updates.check_json", e))
+                            serde_json::from_str(&json)
+                                .map_err(|e| StoreError::corrupt(CHECK_JSON, e))
                         })
                         .transpose()?,
                     created_at: record.created_at,
@@ -401,6 +405,7 @@ async fn add_update(
 /// pending attempts. Subsequent failures append diagnostics to the same incident.
 pub(crate) async fn record_auto_failure(
     tx: &mut toasty::Transaction<'_>,
+    sealer: &Sealer,
     monitor: &MonitorRecord,
     check: &CheckRecord,
     result: CheckResultRecord,
@@ -408,6 +413,7 @@ pub(crate) async fn record_auto_failure(
     if let Some(incident) = open_auto_incident(tx, monitor.id).await? {
         return add_check_update(
             tx,
+            sealer,
             incident.id,
             convert::parse("incidents.status", &incident.status)?,
             result,
@@ -447,7 +453,14 @@ pub(crate) async fn record_auto_failure(
     failures.reverse();
     for failure in failures {
         if failure.health == "down" {
-            add_check_update(tx, record.id, IncidentStatus::Investigating, failure).await?;
+            add_check_update(
+                tx,
+                sealer,
+                record.id,
+                IncidentStatus::Investigating,
+                failure,
+            )
+            .await?;
         }
     }
     toasty::create!(IncidentMonitorRecord {
@@ -461,19 +474,19 @@ pub(crate) async fn record_auto_failure(
 
 async fn add_check_update(
     tx: &mut toasty::Transaction<'_>,
+    sealer: &Sealer,
     incident_id: i64,
     status: IncidentStatus,
     result: CheckResultRecord,
 ) -> Result<()> {
-    let check = stored_check(result)?;
+    let check = stored_check(sealer, result)?;
     let body = check.error.as_deref().unwrap_or("Check failed.");
-    let json = serde_json::to_string(&check)
-        .map_err(|e| StoreError::corrupt("incident_updates.check_json", e))?;
+    let json = serde_json::to_string(&check).map_err(|e| StoreError::corrupt(CHECK_JSON, e))?;
     toasty::create!(IncidentUpdateRecord {
         incident_id: incident_id,
         status: status.as_str(),
         body: body,
-        check_json: Some(json),
+        check_json: Some(sealer.seal(CHECK_JSON, &json)),
         created_at: check.checked_at,
     })
     .exec(&mut *tx)
@@ -485,6 +498,7 @@ async fn add_check_update(
 /// recovering check with its diagnostics.
 pub(crate) async fn resolve_auto(
     tx: &mut toasty::Transaction<'_>,
+    sealer: &Sealer,
     monitor: &MonitorRecord,
     recovery: CheckResultRecord,
 ) -> Result<()> {
@@ -492,7 +506,7 @@ pub(crate) async fn resolve_auto(
         return Ok(());
     };
     let (name, at) = (monitor.name.as_str(), recovery.checked_at);
-    add_check_update(tx, incident.id, IncidentStatus::Resolved, recovery).await?;
+    add_check_update(tx, sealer, incident.id, IncidentStatus::Resolved, recovery).await?;
     IncidentRecord::update_by_id(incident.id)
         .status(IncidentStatus::Resolved.as_str())
         .resolved_at(Some(at))

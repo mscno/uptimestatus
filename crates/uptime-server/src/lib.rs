@@ -10,7 +10,10 @@ pub mod telemetry;
 use anyhow::Context as _;
 use tokio_util::sync::CancellationToken;
 
-use crate::{cli::Command, config::Config};
+use crate::{
+    cli::{Command, SecretsAction},
+    config::Config,
+};
 
 /// Runs one CLI command to completion. `serve` stops when `shutdown` is cancelled.
 pub async fn run(
@@ -18,12 +21,39 @@ pub async fn run(
     config: Config,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
+    if command
+        == (Command::Secrets {
+            action: SecretsAction::GenerateKey,
+        })
+    {
+        return generate_key();
+    }
     let store = serve::connect(&config).await?;
     match command {
         Command::Migrate => {
             store.migrate().await.context("applying migrations")?;
+            serve::prepare_secrets(&store).await?;
         }
+        Command::Secrets {
+            action: SecretsAction::Rotate,
+        } => {
+            anyhow::ensure!(
+                store.encrypts_secrets(),
+                "set secrets.keys (the new key first) before rotating"
+            );
+            store.ensure_secrets_readable().await?;
+            let report = store.reseal().await.context("re-encrypting secrets")?;
+            tracing::info!(
+                sealed = ?report.sealed,
+                indexed = report.indexed,
+                "secrets rotated; keys after the first can be removed"
+            );
+        }
+        Command::Secrets {
+            action: SecretsAction::GenerateKey,
+        } => unreachable!("handled before connecting"),
         Command::Seed { path } => {
+            store.ensure_secrets_readable().await?;
             let file = seed::load(&path)?;
             let report = seed::apply(&store, &file, jiff::Timestamp::now()).await?;
             tracing::info!(
@@ -35,6 +65,7 @@ pub async fn run(
             );
         }
         Command::Export { output } => {
+            store.ensure_secrets_readable().await?;
             let text = store.export_config().await?.to_toml()?;
             match output {
                 Some(path) => std::fs::write(&path, text)
@@ -46,8 +77,19 @@ pub async fn run(
             if migrate {
                 store.migrate().await.context("applying migrations")?;
             }
+            serve::prepare_secrets(&store).await?;
+            if roles.worker {
+                serve::reseal_in_background(store.clone());
+            }
             serve::run(&config, store, roles, shutdown).await?;
         }
     }
+    Ok(())
+}
+
+/// Prints a new `secrets.keys` entry.
+pub fn generate_key() -> anyhow::Result<()> {
+    let key = uptime_store::secrets::Keyring::generate();
+    std::io::Write::write_all(&mut std::io::stdout(), format!("{key}\n").as_bytes())?;
     Ok(())
 }

@@ -13,6 +13,7 @@ use uptime_domain::{Alert, AlertEvent, ChannelSpec, Routing};
 use crate::{
     Backend, Result, Store, StoreError, convert,
     models::{MonitorChannelRecord, MonitorRecord, NotificationChannelRecord, OutboxRecord},
+    secrets::Sealer,
 };
 
 /// A stored channel.
@@ -90,15 +91,17 @@ impl Store {
         let record = toasty::create!(NotificationChannelRecord {
             name: spec.name.trim(),
             kind: spec.kind.as_str(),
-            url: spec.url.as_str(),
-            secret: spec.secret.clone(),
+            url: self.sealer().seal(CHANNEL_URL, spec.url.as_str()),
+            secret: self
+                .sealer()
+                .seal_opt(CHANNEL_SECRET, spec.secret.as_deref()),
             default_on: spec.default_on,
             routing: routing_json(&spec.routing)?,
             created_at: now,
         })
         .exec(&mut self.db())
         .await?;
-        channel(record)
+        channel(self.sealer(), record)
     }
 
     pub async fn update_channel(&self, id: i64, spec: &ChannelSpec) -> Result<Channel> {
@@ -108,8 +111,11 @@ impl Store {
         NotificationChannelRecord::update_by_id(id)
             .name(spec.name.trim())
             .kind(spec.kind.as_str())
-            .url(spec.url.as_str())
-            .secret(spec.secret.clone())
+            .url(self.sealer().seal(CHANNEL_URL, spec.url.as_str()))
+            .secret(
+                self.sealer()
+                    .seal_opt(CHANNEL_SECRET, spec.secret.as_deref()),
+            )
             .default_on(spec.default_on)
             .routing(routing_json(&spec.routing)?)
             .exec(&mut self.db())
@@ -134,7 +140,7 @@ impl Store {
             .first()
             .exec(&mut self.db())
             .await?
-            .map(channel)
+            .map(|record| channel(self.sealer(), record))
             .transpose()
     }
 
@@ -144,7 +150,7 @@ impl Store {
             .exec(&mut self.db())
             .await?
             .into_iter()
-            .map(channel)
+            .map(|record| channel(self.sealer(), record))
             .collect::<Result<Vec<_>>>()?;
         channels.sort_by(|a, b| {
             a.spec
@@ -276,7 +282,7 @@ impl Store {
         .exec(&mut db)
         .await?
         .into_iter()
-        .map(|record| channel(record).map(|c| (c.id, c)))
+        .map(|record| channel(self.sealer(), record).map(|c| (c.id, c)))
         .collect::<Result<_>>()?;
         let mut deliveries = records
             .into_iter()
@@ -426,7 +432,7 @@ pub(crate) async fn enqueue(
     .await?;
     for record in records {
         let channel_id = record.id;
-        let routing = channel(record)?.spec.routing;
+        let routing = routing(record.routing.as_deref())?;
         let Some(due) = routing.send_at(alert.event, alert.at) else {
             continue;
         };
@@ -488,21 +494,29 @@ async fn delete_outbox(tx: &mut toasty::Transaction<'_>, id: i64) -> Result<()> 
     Ok(())
 }
 
-fn channel(record: NotificationChannelRecord) -> Result<Channel> {
+/// Associated data for sealed channel columns.
+const CHANNEL_URL: &str = "notification_channels.url";
+const CHANNEL_SECRET: &str = "notification_channels.secret";
+
+fn channel(sealer: &Sealer, record: NotificationChannelRecord) -> Result<Channel> {
     Ok(Channel {
         id: record.id,
         spec: ChannelSpec {
             name: record.name,
             kind: convert::parse("notification_channels.kind", &record.kind)?,
-            url: convert::parse("notification_channels.url", &record.url)?,
-            secret: record.secret,
+            url: convert::parse(CHANNEL_URL, &sealer.open(CHANNEL_URL, &record.url)?)?,
+            secret: sealer.open_opt(CHANNEL_SECRET, record.secret.as_deref())?,
             default_on: record.default_on,
-            routing: match record.routing.as_deref() {
-                Some(json) => serde_json::from_str(json)
-                    .map_err(|e| StoreError::corrupt("notification_channels.routing", e))?,
-                None => Routing::default(),
-            },
+            routing: routing(record.routing.as_deref())?,
         },
         created_at: record.created_at,
     })
+}
+
+fn routing(json: Option<&str>) -> Result<Routing> {
+    match json {
+        Some(json) => serde_json::from_str(json)
+            .map_err(|e| StoreError::corrupt("notification_channels.routing", e)),
+        None => Ok(Routing::default()),
+    }
 }

@@ -16,7 +16,9 @@ mod monitors;
 mod notifications;
 mod pages;
 mod queue;
+mod reseal;
 mod results;
+pub mod secrets;
 mod tokens;
 
 use jiff::{Timestamp, civil::Date};
@@ -32,6 +34,7 @@ pub use monitors::{Monitor, MonitorOverview, RuntimeSnapshot};
 pub use notifications::{Channel, Delivery, DeliveryLog, DeliveryStatus};
 pub use pages::{Page, PageImage, PageSummary};
 pub use queue::Claim;
+pub use reseal::ResealReport;
 pub use results::{CertUpdate, CheckRecord, StoredCheck, WINDOW_LIMIT, WindowCheck};
 pub use toasty::migration::{MigrationReport, MigrationSet};
 pub use tokens::{ApiToken, NewApiToken};
@@ -85,6 +88,7 @@ impl Default for ConnectOptions {
 pub struct Store {
     db: toasty::Db,
     backend: Backend,
+    sealer: secrets::Sealer,
 }
 
 impl Store {
@@ -129,11 +133,30 @@ impl Store {
                 builder.build(driver).await?
             }
         };
-        Ok(Self { db, backend })
+        Ok(Self {
+            db,
+            backend,
+            sealer: secrets::Sealer::default(),
+        })
+    }
+
+    /// Encrypts secrets at rest with `keyring` (see [`secrets`]).
+    pub fn with_keyring(mut self, keyring: secrets::Keyring) -> Self {
+        self.sealer = secrets::Sealer::new(Some(keyring));
+        self
     }
 
     pub fn backend(&self) -> Backend {
         self.backend
+    }
+
+    /// Whether secrets are encrypted (a keyring is configured).
+    pub fn encrypts_secrets(&self) -> bool {
+        self.sealer.keyring().is_some()
+    }
+
+    pub(crate) fn sealer(&self) -> &secrets::Sealer {
+        &self.sealer
     }
 
     pub(crate) fn raw_timestamp(&self, value: Timestamp) -> toasty::stmt::Value {

@@ -21,6 +21,26 @@ use uptime_web::{
 
 use crate::{cli::Roles, config::Config};
 
+/// Refuses to run against sealed secrets without keys, then seals the
+/// configuration tables (quick) so pushes and alerts work at once.
+pub async fn prepare_secrets(store: &Store) -> anyhow::Result<()> {
+    store
+        .ensure_secrets_readable()
+        .await
+        .context("checking secrets.keys")?;
+    store.reseal_config().await.context("sealing secrets")?;
+    Ok(())
+}
+
+/// Seals the remaining plaintext (check history) without delaying startup.
+pub fn reseal_in_background(store: Store) {
+    tokio::spawn(async move {
+        if let Err(error) = store.reseal().await {
+            tracing::error!(error = %error, "sealing stored secrets failed");
+        }
+    });
+}
+
 /// Connects to the database described by `config`.
 pub async fn connect(config: &Config) -> anyhow::Result<Store> {
     if config.database.require_existing {
@@ -56,7 +76,18 @@ pub async fn connect(config: &Config) -> anyhow::Result<Store> {
         max_connections: config.database.max_connections,
         ..Default::default()
     };
-    Store::connect_backend(
+    let keyring = config.secrets.keyring()?;
+    if keyring.is_none() {
+        anyhow::ensure!(
+            cfg!(debug_assertions),
+            "secrets.keys is required to encrypt secrets at rest; generate one with \
+             `uptimestatus secrets generate-key` and keep a backup of it"
+        );
+        tracing::warn!(
+            "secrets.keys is not set; secrets are stored unencrypted (debug builds only)"
+        );
+    }
+    let store = Store::connect_backend(
         config.database_url.expose(),
         config.database.backend,
         config
@@ -67,7 +98,11 @@ pub async fn connect(config: &Config) -> anyhow::Result<Store> {
         &options,
     )
     .await
-    .context("connecting to the database")
+    .context("connecting to the database")?;
+    Ok(match keyring {
+        Some(keyring) => store.with_keyring(keyring),
+        None => store,
+    })
 }
 
 /// Builds the prober shared by the scheduler and "Test now".

@@ -15,6 +15,7 @@ use crate::{
         MonitorRuntimeRecord,
     },
     notifications,
+    secrets::Sealer,
 };
 
 /// Everything produced by executing one claimed slot.
@@ -163,7 +164,9 @@ impl Store {
             status_code: status_code,
             error_kind: error_kind,
             error: error.clone(),
-            response_body: verdict.response_body.clone(),
+            response_body: self
+                .sealer()
+                .seal_opt(RESPONSE_BODY, verdict.response_body.as_deref()),
             region: record.region.as_str(),
         })
         .exec(&mut tx)
@@ -184,7 +187,8 @@ impl Store {
             let monitor = MonitorRecord::filter_by_id(record.monitor_id.0)
                 .get(&mut tx)
                 .await?;
-            incidents::record_auto_failure(&mut tx, &monitor, record, stored).await?;
+            incidents::record_auto_failure(&mut tx, self.sealer(), &monitor, record, stored)
+                .await?;
         } else if matches!(
             record.runtime.state,
             MonitorState::Up | MonitorState::Degraded
@@ -193,7 +197,7 @@ impl Store {
             let monitor = MonitorRecord::filter_by_id(record.monitor_id.0)
                 .get(&mut tx)
                 .await?;
-            incidents::resolve_auto(&mut tx, &monitor, stored).await?;
+            incidents::resolve_auto(&mut tx, self.sealer(), &monitor, stored).await?;
         }
         if let Some(transition) = record.transition {
             let monitor = MonitorRecord::filter_by_id(record.monitor_id.0)
@@ -343,7 +347,7 @@ impl Store {
             .exec(&mut self.db())
             .await?
             .into_iter()
-            .map(stored_check)
+            .map(|record| stored_check(self.sealer(), record))
             .collect()
     }
 
@@ -527,7 +531,10 @@ fn to_i64(count: u64) -> i64 {
     i64::try_from(count).unwrap_or(i64::MAX)
 }
 
-pub(crate) fn stored_check(record: CheckResultRecord) -> Result<StoredCheck> {
+/// Associated data for sealed response excerpts.
+const RESPONSE_BODY: &str = "check_results.response_body";
+
+pub(crate) fn stored_check(sealer: &Sealer, record: CheckResultRecord) -> Result<StoredCheck> {
     Ok(StoredCheck {
         scheduled_for: record.scheduled_for,
         checked_at: record.checked_at,
@@ -546,7 +553,7 @@ pub(crate) fn stored_check(record: CheckResultRecord) -> Result<StoredCheck> {
             .map(|kind| convert::parse("check_results.error_kind", kind))
             .transpose()?,
         error: record.error,
-        response_body: record.response_body,
+        response_body: sealer.open_opt(RESPONSE_BODY, record.response_body.as_deref())?,
         region: record.region,
         excused: record.excused_at.is_some(),
     })

@@ -10,7 +10,7 @@
 
 use jiff::{Timestamp, civil::Date};
 use toasty::Json;
-use uptime_domain::{Alert, CheckSpec};
+use uptime_domain::Alert;
 
 /// Monitor configuration (written by admins).
 #[derive(Debug, toasty::Model)]
@@ -23,7 +23,10 @@ pub struct MonitorRecord {
     pub key: String,
     pub name: String,
     #[column(type = text)]
-    pub check: Json<CheckSpec>,
+    pub check: String,
+    /// Push monitors: blind index of the token (`secrets::Sealer::blind_index`).
+    #[index]
+    pub push_token_index: Option<String>,
     pub interval_ms: i64,
     pub retry_interval_ms: i64,
     pub timeout_ms: i64,

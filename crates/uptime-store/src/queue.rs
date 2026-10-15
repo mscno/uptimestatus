@@ -48,16 +48,6 @@ WHERE r."monitor_id" = due."monitor_id" AND m."id" = r."monitor_id"
 RETURNING r."monitor_id", r."scheduled_for", r."state", r."consecutive_failures"
 "#;
 
-const PUSH_MONITOR_SQL: &str = r#"
-SELECT "id" FROM "monitors"
-WHERE "check"::jsonb->>'type' = 'push' AND "check"::jsonb->>'token' = $1
-"#;
-
-const PUSH_MONITOR_SQLITE_SQL: &str = r#"
-SELECT "id" FROM "monitors"
-WHERE json_extract("check", '$.type') = 'push' AND json_extract("check", '$.token') = ?1
-"#;
-
 const DUE_SQLITE_SQL: &str = r#"
 SELECT r."monitor_id", r."next_run_at", m."timeout_ms"
 FROM "monitor_runtime" r JOIN "monitors" m ON m."id" = r."monitor_id"
@@ -78,16 +68,23 @@ impl Store {
     /// now, so the push is judged at once. `None` if no monitor has the token.
     pub async fn record_push(&self, token: &str, push: &Push) -> Result<Option<MonitorId>> {
         let mut db = self.db();
-        let sql = if self.backend() == Backend::Postgres {
-            PUSH_MONITOR_SQL
-        } else {
-            PUSH_MONITOR_SQLITE_SQL
-        };
-        let rows = toasty::sql::query(sql).bind(token).exec(&mut db).await?;
-        let Some(row) = rows.first() else {
+        let indexes = self.sealer().blind_indexes(convert::PUSH_TOKEN, token);
+        let candidates =
+            MonitorRecord::filter(MonitorRecord::fields().push_token_index().in_list(indexes))
+                .exec(&mut db)
+                .await?;
+        // The index narrows the search; the sealed token decides.
+        let mut id = None;
+        for record in candidates {
+            let monitor = convert::monitor(self.sealer(), record)?;
+            if matches!(&monitor.spec.check, CheckSpec::Push(push) if push.token == token) {
+                id = Some(monitor.id.0);
+                break;
+            }
+        }
+        let Some(id) = id else {
             return Ok(None);
         };
-        let id = Row::new("record_push", row)?.i64(0)?;
         MonitorRuntimeRecord::update_by_monitor_id(id)
             .last_push_at(Some(push.at))
             .last_push_up(Some(push.up))
@@ -165,7 +162,7 @@ impl Store {
                 .exec(&mut db)
                 .await?
                 .into_iter()
-                .map(|record| convert::monitor(record).map(|m| (m.id.0, m)))
+                .map(|record| convert::monitor(self.sealer(), record).map(|m| (m.id.0, m)))
                 .collect::<Result<_>>()?;
 
         let runtime_ids: Vec<i64> = monitors.keys().copied().collect();

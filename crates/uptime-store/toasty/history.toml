@@ -134,3 +134,8 @@ snapshot_name = "0025_snapshot.toml"
 id = 8156651507014694728
 name = "0026_excused_checks.sql"
 snapshot_name = "0026_snapshot.toml"
+
+[[migrations]]
+id = 5566665392088095509
+name = "0027_sealed_secrets.sql"
+snapshot_name = "0027_snapshot.toml"

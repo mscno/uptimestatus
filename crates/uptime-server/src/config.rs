@@ -41,6 +41,30 @@ pub struct Config {
     pub domains: DomainsConfig,
     #[serde(default)]
     pub storage: StorageConfig,
+    #[serde(default)]
+    pub secrets: SecretsConfig,
+}
+
+/// Keys that encrypt secrets at rest (see `uptime_store::secrets`).
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SecretsConfig {
+    /// `id:base64key` entries, comma-separated; the first encrypts, the rest
+    /// only decrypt (rotation). Required in release builds.
+    pub keys: Option<Secret>,
+}
+
+impl SecretsConfig {
+    /// The parsed keyring, if keys are configured.
+    pub fn keyring(
+        &self,
+    ) -> Result<Option<uptime_store::secrets::Keyring>, uptime_store::secrets::KeyringError> {
+        self.keys
+            .as_ref()
+            .filter(|keys| !keys.expose().trim().is_empty())
+            .map(|keys| uptime_store::secrets::Keyring::parse(keys.expose()))
+            .transpose()
+    }
 }
 
 /// Where uploaded files (page logos and favicons) live.
@@ -504,6 +528,25 @@ mod tests {
                 Some("private-token")
             );
             assert!(!format!("{config:?}").contains("private-token"));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn secret_keys_parse_from_env_and_stay_redacted() {
+        Jail::expect_with(|jail| {
+            jail.clear_env();
+            required_env(jail);
+            assert!(Config::load().unwrap().secrets.keyring().unwrap().is_none());
+            let key = uptime_store::secrets::Keyring::generate();
+            jail.set_env("UPTIMESTATUS_SECRETS__KEYS", &key);
+            let config = Config::load().unwrap();
+            let keyring = config.secrets.keyring().unwrap().unwrap();
+            assert_eq!(keyring.active_id(), key.split(':').next().unwrap());
+            let encoded = key.split(':').nth(1).unwrap();
+            assert!(!format!("{config:?}").contains(encoded));
+            jail.set_env("UPTIMESTATUS_SECRETS__KEYS", "k1:not-a-key");
+            assert!(Config::load().unwrap().secrets.keyring().is_err());
             Ok(())
         });
     }

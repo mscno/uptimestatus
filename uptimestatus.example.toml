@@ -55,3 +55,8 @@ verify = true
 
 [storage]
 path = "/data"         # uploaded logos and favicons; uploads are off when unset
+
+[secrets]
+# Encrypts secrets at rest; required outside debug builds. Prefer the
+# UPTIMESTATUS_SECRETS__KEYS environment variable to keeping keys in a file.
+# keys = "k1a2b3c4d:<base64 of 32 bytes>"   # `uptimestatus secrets generate-key`

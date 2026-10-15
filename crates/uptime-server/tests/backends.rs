@@ -7,7 +7,7 @@ use uptime_server::{
     cli::{Command, Roles},
     config::{
         AuthConfig, ChecksConfig, Config, DatabaseConfig, DomainsConfig, HttpConfig, LogConfig,
-        Secret, StorageConfig,
+        Secret, SecretsConfig, StorageConfig,
     },
 };
 use uptime_store::Backend;
@@ -37,6 +37,7 @@ fn config(url: &str, backend: Backend) -> Config {
             ..DomainsConfig::default()
         },
         storage: StorageConfig::default(),
+        secrets: SecretsConfig::default(),
     }
 }
 

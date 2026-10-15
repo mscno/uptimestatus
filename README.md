@@ -31,7 +31,7 @@ You need a GitHub OAuth app for the admin console (Settings → Developer settin
 apps; callback URL `<APP_URL>/auth/github/callback`, e.g. `http://localhost:8080/auth/github/callback`).
 
 ```sh
-cp .env.example .env      # set UPTIMESTATUS_AUTH__ADMINS, GITHUB_CLIENT_ID/SECRET, COOKIE_KEY
+cp .env.example .env      # set UPTIMESTATUS_AUTH__ADMINS, GITHUB_CLIENT_ID/SECRET, COOKIE_KEY, SECRETS__KEYS
 docker compose up --build # SQLite on a named volume, http://localhost:8080
 ```
 
@@ -119,9 +119,28 @@ the configuration logger redacts these secrets. [`.env.example`](.env.example) l
 | `UPTIMESTATUS_DOMAINS__RECHECK_AFTER` | `24h` | Re-verify verified domains this often |
 | `UPTIMESTATUS_DOMAINS__PREWARM_TLS` | `true` | Check verified domains over HTTPS and show whether a certificate is served; turn off if no proxy issues certificates |
 | `UPTIMESTATUS_STORAGE__PATH` | – | Writable directory for uploaded logos and favicons; uploads are off when unset |
+| `UPTIMESTATUS_SECRETS__KEYS` | – | Keys that encrypt secrets at rest, `id:base64,…` (first one active); required in release builds. See [Secrets at rest](#secrets-at-rest) |
 | `RUST_LOG` | `info` | `tracing` filter directives |
 
 Durations use humantime syntax (`30s`, `5m`, `90days`).
+
+### Secrets at rest
+
+Monitor checks (URLs, credentials, headers, push tokens, request bodies), alert channel URLs and
+signing secrets, and response excerpts kept with failed checks and incidents are encrypted in the
+database with XChaCha20-Poly1305. Generate a key with `uptimestatus secrets generate-key` (no
+database needed) and set `UPTIMESTATUS_SECRETS__KEYS` to it. Release builds refuse to start
+without keys; an instance without keys also refuses a database that holds encrypted values.
+
+- **Back the key up** outside the database (a password manager, your platform's secret store).
+  Without it, encrypted values cannot be recovered; database backups alone are not enough.
+- **Upgrading** an existing database: set the key and start as usual. Configuration (monitors,
+  channels) is sealed before serving; check history is sealed in the background.
+- **Rotating:** generate a new key and put it first, keeping the old one after it
+  (`new-id:…,old-id:…`), restart, then run `uptimestatus secrets rotate` (or wait for the
+  background pass) and remove the old key.
+- **Transfers** (`uptimestatus-transfer`) copy ciphertext as-is: the target needs the same keys.
+  `export` writes plaintext TOML, so treat its output as a secret.
 
 ## Databases
 
@@ -159,7 +178,8 @@ otherwise). For a manual run, export those two variables and run
 
 ## Running modes
 
-`uptimestatus [serve [--migrate] [--roles web,worker]]`, `migrate`, `seed <file>`, `export [-o file]`.
+`uptimestatus [serve [--migrate] [--roles web,worker]]`, `migrate`, `seed <file>`, `export [-o file]`,
+`secrets generate-key`, `secrets rotate`.
 
 | Command | What it does |
 |---|---|
@@ -168,7 +188,9 @@ otherwise). For a manual run, export those two variables and run
 | `serve --roles worker` | Only the scheduler, alert sender, domain verifier and retention janitor (HTTP health endpoints only) |
 | `migrate` | Apply pending migrations and exit (release step) |
 | `seed file.toml` | Create the monitors and pages in a TOML file; existing keys and slugs are left alone |
-| `export` | Write all monitors and pages as TOML, the format `seed` reads |
+| `export` | Write all monitors and pages as TOML, the format `seed` reads (secrets in plaintext) |
+| `secrets generate-key` | Print a new key for `UPTIMESTATUS_SECRETS__KEYS` |
+| `secrets rotate` | Re-encrypt everything with the first key so older keys can be removed |
 
 One `serve` process is enough for a small setup. If you want to separate the web app from
 the checks, PostgreSQL supports `--roles web` and `--roles worker` instances sharing a

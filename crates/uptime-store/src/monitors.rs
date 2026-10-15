@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use jiff::Timestamp;
-use toasty::Json;
 use uptime_domain::{MonitorId, MonitorSpec, MonitorState, Runtime};
 
 use crate::{
@@ -61,7 +60,8 @@ impl Store {
         let record = toasty::create!(MonitorRecord {
             key: spec.key.as_str(),
             name: spec.name.as_str(),
-            check: Json(spec.check.clone()),
+            check: convert::seal_check(self.sealer(), &spec.check)?,
+            push_token_index: convert::push_token_index(self.sealer(), &spec.check),
             interval_ms: convert::millis(policy.interval),
             retry_interval_ms: convert::millis(policy.retry_interval),
             timeout_ms: convert::millis(policy.timeout),
@@ -91,7 +91,7 @@ impl Store {
         .await?;
 
         tx.commit().await?;
-        convert::monitor(record)
+        convert::monitor(self.sealer(), record)
     }
 
     pub async fn monitor(&self, id: MonitorId) -> Result<Option<Monitor>> {
@@ -99,7 +99,7 @@ impl Store {
             .first()
             .exec(&mut self.db())
             .await?
-            .map(convert::monitor)
+            .map(|record| convert::monitor(self.sealer(), record))
             .transpose()
     }
 
@@ -110,7 +110,7 @@ impl Store {
             .exec(&mut self.db())
             .await?
             .into_iter()
-            .map(convert::monitor)
+            .map(|record| convert::monitor(self.sealer(), record))
             .collect()
     }
 
@@ -153,7 +153,8 @@ impl Store {
         MonitorRecord::update_by_id(id.0)
             .key(spec.key.as_str())
             .name(spec.name.as_str())
-            .check(Json(spec.check.clone()))
+            .check(convert::seal_check(self.sealer(), &spec.check)?)
+            .push_token_index(convert::push_token_index(self.sealer(), &spec.check))
             .interval_ms(convert::millis(policy.interval))
             .retry_interval_ms(convert::millis(policy.retry_interval))
             .timeout_ms(convert::millis(policy.timeout))

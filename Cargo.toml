@@ -52,8 +52,9 @@ tokio-postgres = "0.7.18"
 tokio-postgres-rustls = "0.14.0"
 rustls-platform-verifier = "0.7.1"
 
-# Crypto and encoding (OAuth state, PKCE, cookie keys)
+# Crypto and encoding (OAuth state, PKCE, cookie keys, secrets at rest)
 base64 = "0.23.1"
+chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc"] }
 getrandom = "0.4.3"
 sha2 = "0.11.0"
 hmac = "0.13.0"

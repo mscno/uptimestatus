@@ -4,12 +4,32 @@ use std::{str::FromStr, time::Duration};
 
 use jiff::Timestamp;
 use toasty::stmt::Value;
-use uptime_domain::{CheckPolicy, MonitorId, MonitorSpec, MonitorState, Runtime};
+use uptime_domain::{CheckPolicy, CheckSpec, MonitorId, MonitorSpec, MonitorState, Runtime};
 
 use crate::{
     Monitor, Result, RuntimeSnapshot, StoreError,
     models::{MonitorRecord, MonitorRuntimeRecord},
+    secrets::Sealer,
 };
+
+/// Associated data for sealed monitor checks.
+pub(crate) const MONITOR_CHECK: &str = "monitors.check";
+/// Blind-index purpose for push tokens.
+pub(crate) const PUSH_TOKEN: &str = "push_token";
+
+/// A check spec as stored: JSON, sealed.
+pub(crate) fn seal_check(sealer: &Sealer, check: &CheckSpec) -> Result<String> {
+    let json = serde_json::to_string(check).map_err(|e| StoreError::corrupt(MONITOR_CHECK, e))?;
+    Ok(sealer.seal(MONITOR_CHECK, &json))
+}
+
+/// The push token's blind index, for push monitors.
+pub(crate) fn push_token_index(sealer: &Sealer, check: &CheckSpec) -> Option<String> {
+    match check {
+        CheckSpec::Push(push) => Some(sealer.blind_index(PUSH_TOKEN, &push.token)),
+        _ => None,
+    }
+}
 
 /// Milliseconds as stored in `BIGINT` columns (saturating; durations are validated upstream).
 pub(crate) fn millis(duration: Duration) -> i64 {
@@ -38,7 +58,8 @@ pub(crate) fn join_tags(tags: &[String]) -> Option<String> {
     (!tags.is_empty()).then(|| tags.join(" "))
 }
 
-pub(crate) fn monitor(record: MonitorRecord) -> Result<Monitor> {
+pub(crate) fn monitor(sealer: &Sealer, record: MonitorRecord) -> Result<Monitor> {
+    let check = sealer.open(MONITOR_CHECK, &record.check)?;
     let policy = CheckPolicy {
         interval: duration("monitors.interval_ms", record.interval_ms)?,
         retry_interval: duration("monitors.retry_interval_ms", record.retry_interval_ms)?,
@@ -56,7 +77,8 @@ pub(crate) fn monitor(record: MonitorRecord) -> Result<Monitor> {
         spec: MonitorSpec {
             key: parse("monitors.key", &record.key)?,
             name: record.name,
-            check: record.check.0,
+            check: serde_json::from_str(&check)
+                .map_err(|e| StoreError::corrupt(MONITOR_CHECK, e))?,
             policy,
             active: record.active,
             tags: record

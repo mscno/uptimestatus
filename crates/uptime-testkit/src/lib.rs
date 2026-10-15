@@ -16,12 +16,20 @@ pub mod dns;
 pub mod logs;
 
 use tokio_postgres::{Client, NoTls};
-use uptime_store::{ConnectOptions, MIGRATIONS, Store};
+use uptime_store::{ConnectOptions, MIGRATIONS, Store, secrets::Keyring};
 use url::Url;
 
 const DEFAULT_ADMIN_URL: &str = "postgres://postgres:postgres@localhost:5433/postgres";
 const TEST_DB_PREFIX: &str = "uptimestatus_test_";
 const TEMPLATE_PREFIX: &str = "uptimestatus_tpl_";
+
+/// The `secrets.keys` every test store uses: secrets are sealed in tests too.
+pub const TEST_KEYS: &str = "test:dXB0aW1lc3RhdHVzLXRlc3Qta2V5LTMyLWJ5dGVzISE=";
+
+/// The keyring for [`TEST_KEYS`].
+pub fn test_keyring() -> Keyring {
+    Keyring::parse(TEST_KEYS).expect("the test keyring is valid")
+}
 
 /// A database that exists for the lifetime of one test.
 #[derive(Debug)]
@@ -61,7 +69,8 @@ impl TestDb {
         let url = database_url(&admin_url, &name);
         let store = Store::connect(&url, &ConnectOptions::default())
             .await
-            .expect("connect to test database");
+            .expect("connect to test database")
+            .with_keyring(test_keyring());
         Self {
             name,
             url,

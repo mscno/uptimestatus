@@ -6,10 +6,10 @@ use std::{net::IpAddr, time::Duration};
 
 use tokio_util::sync::CancellationToken;
 use uptime_server::{
-    cli::{Command, Roles},
+    cli::{Command, Roles, SecretsAction},
     config::{
         AuthConfig, ChecksConfig, Config, DatabaseConfig, DomainsConfig, HttpConfig, LogConfig,
-        Secret, StorageConfig,
+        Secret, SecretsConfig, StorageConfig,
     },
 };
 use uptime_testkit::TestDb;
@@ -37,6 +37,9 @@ fn config(db: &TestDb) -> Config {
             ..DomainsConfig::default()
         },
         storage: StorageConfig::default(),
+        secrets: SecretsConfig {
+            keys: Some(Secret::new(uptime_testkit::TEST_KEYS)),
+        },
     }
 }
 
@@ -70,6 +73,94 @@ async fn serve_command_runs_until_cancelled() {
         .expect("stops promptly")
         .unwrap()
         .unwrap();
+}
+
+#[tokio::test]
+async fn commands_refuse_sealed_secrets_without_keys() {
+    let db = TestDb::new().await;
+    db.store()
+        .create_monitor(
+            &uptime_domain::MonitorSpec {
+                key: "db".parse().unwrap(),
+                name: "Database".into(),
+                check: uptime_domain::CheckSpec::Tcp(uptime_domain::TcpCheck::connect(
+                    "db.example.com",
+                    5432,
+                )),
+                policy: uptime_domain::CheckPolicy::default(),
+                active: true,
+                tags: Vec::new(),
+                group: None,
+            },
+            jiff::Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    let mut keyless = config(&db);
+    keyless.secrets = SecretsConfig::default();
+    let error = uptime_server::run(Command::Migrate, keyless, CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("secrets.keys"), "{error:#}");
+}
+
+#[tokio::test]
+async fn secrets_rotate_re_encrypts_with_the_first_key() {
+    let db = TestDb::new().await;
+    let store = db.store();
+    store
+        .create_channel(
+            &uptime_domain::ChannelSpec {
+                name: "Ops".into(),
+                kind: uptime_domain::ChannelKind::Webhook,
+                url: "https://hooks.example.com/private".parse().unwrap(),
+                secret: Some("signing".into()),
+                default_on: false,
+                routing: Default::default(),
+            },
+            jiff::Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    let new_key = uptime_store::secrets::Keyring::generate();
+    let mut rotating = config(&db);
+    rotating.secrets.keys = Some(Secret::new(format!(
+        "{new_key},{}",
+        uptime_testkit::TEST_KEYS
+    )));
+    let rotate = || Command::Secrets {
+        action: SecretsAction::Rotate,
+    };
+    uptime_server::run(rotate(), rotating, CancellationToken::new())
+        .await
+        .unwrap();
+
+    // Only the new key is needed now.
+    let rotated = uptime_store::Store::connect(db.url(), &Default::default())
+        .await
+        .unwrap()
+        .with_keyring(uptime_store::secrets::Keyring::parse(&new_key).unwrap());
+    let channels = rotated.list_channels().await.unwrap();
+    assert_eq!(channels[0].spec.secret.as_deref(), Some("signing"));
+
+    // Rotating needs keys; generating one needs no database.
+    let mut keyless = config(&db);
+    keyless.secrets = SecretsConfig::default();
+    let error = uptime_server::run(rotate(), keyless, CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("secrets.keys"), "{error}");
+    let mut offline = config(&db);
+    offline.database_url = Secret::new("postgres://postgres:postgres@127.0.0.1:1/nope");
+    uptime_server::run(
+        Command::Secrets {
+            action: SecretsAction::GenerateKey,
+        },
+        offline,
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]

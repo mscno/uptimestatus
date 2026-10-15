@@ -160,6 +160,9 @@ pub fn normalize(kind: Kind, value: Option<String>) -> Result<Option<String>> {
         },
         Kind::Timestamp => format!("{:.9}", value.parse::<jiff::Timestamp>()?),
         Kind::Date => value.parse::<jiff::civil::Date>()?.to_string(),
+        // Sealed secrets (`uptime_store::secrets`) travel as ciphertext: the
+        // target needs the same `secrets.keys` to read them.
+        Kind::Json if uptime_store::secrets::is_sealed(&value) => value,
         Kind::Json => serde_json::to_string(&value.parse::<serde_json::Value>()?)?,
         Kind::Text => value,
     };

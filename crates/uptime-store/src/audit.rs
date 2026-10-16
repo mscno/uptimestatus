@@ -72,6 +72,7 @@ pub struct AuditQuery {
 impl Store {
     /// Records an event at `at`. Returns its id.
     pub async fn record_audit(&self, event: &NewAuditEvent, at: Timestamp) -> Result<i64> {
+        self.gate.wait().await;
         let details = (!event.details.is_null())
             .then(|| serde_json::to_string(&event.details))
             .transpose()

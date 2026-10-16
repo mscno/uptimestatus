@@ -179,6 +179,7 @@ impl Store {
 
     /// Replaces a monitor's tags only (bulk tagging); leaves its schedule alone.
     pub async fn set_monitor_tags(&self, id: MonitorId, tags: &[String]) -> Result<()> {
+        self.gate.wait().await;
         if MonitorRecord::filter_by_id(id.0)
             .first()
             .exec(&mut self.db())
@@ -250,6 +251,7 @@ impl Store {
     /// Returns whether a monitor was deleted.
     #[tracing::instrument(skip(self))]
     pub async fn delete_monitor(&self, id: MonitorId) -> Result<bool> {
+        self.gate.wait().await;
         let deleted = toasty::sql::statement(r#"DELETE FROM "monitors" WHERE "id" = $1"#)
             .bind(id.0)
             .exec(&mut self.db())

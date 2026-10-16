@@ -146,7 +146,8 @@ database needed) and set `UPTIMESTATUS_SECRETS__KEYS` to it. Release builds refu
 without keys; an instance without keys also refuses a database that holds encrypted values.
 
 - **Back the key up** outside the database (a password manager, your platform's secret store).
-  Without it, encrypted values cannot be recovered; database backups alone are not enough.
+  Without it, encrypted values cannot be recovered, and a database backup alone is not enough:
+  restored secrets also need this key (see [Backups](#backups)).
 - **Upgrading** an existing database: set the key and start as usual. Configuration (monitors,
   channels) is sealed before serving; check history is sealed in the background.
 - **Rotating:** generate a new key and put it first, keeping the old one after it
@@ -154,6 +155,39 @@ without keys; an instance without keys also refuses a database that holds encryp
   background pass) and remove the old key.
 - **Transfers** (`uptimestatus-transfer`) copy ciphertext as-is: the target needs the same keys.
   `export` writes plaintext TOML, so treat its output as a secret.
+
+### Backups
+
+With a local SQLite or Turso database, the app can take its own encrypted backups. It snapshots
+the database, packages the snapshot and uploaded images as a `tar.gz`, encrypts that to an age
+recipient, and uploads it to an S3-compatible bucket (Fly Tigris) from a background task.
+
+```toml
+[backup]
+enabled = true
+bucket = "uptimestatus-backups"                        # or the BUCKET_NAME Fly injects
+recipient = "age1…"                                    # `age-keygen`'s public key; keep the identity off the machine
+at = "03:17"                                           # UTC
+# endpoint = "https://fly.storage.tigris.dev"          # or AWS_ENDPOINT_URL_S3
+# region = "auto"
+# access_key_id = "…"                                   # or AWS_ACCESS_KEY_ID
+# secret_access_key = "…"                               # or AWS_SECRET_ACCESS_KEY
+# prefix = "uptimestatus/"
+# write_timeout = "30s"
+```
+
+- **Bucket:** `fly storage create` (or `fly storage create --name uptimestatus-backups`) sets
+  `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL_S3` and `BUCKET_NAME` as Fly
+  secrets, so only `enabled` and `recipient` are strictly required in the app.
+- **Block writes:** only the snapshot pauses writes. It uses SQLite's `VACUUM INTO`, which takes a
+  transactionally consistent copy, so the pause is short and bounded by `write_timeout`.
+- **Upload:** packaging and age encryption happen locally; the S3 upload runs in the background
+  so the app is serving again immediately. A failed upload is logged and retried a few times.
+- **Schedule and on demand:** the worker runs one backup a day at `at` (UTC); `uptimestatus backup`
+  takes one now and waits for the upload. Runs never overlap.
+- **Restoring** also needs `UPTIMESTATUS_SECRETS__KEYS` (the report records where it is kept) and
+  the pinned image. Decrypt the archive with the age identity, restore the database and WAL
+  together to a fresh `/data` volume, and confirm `/readyz` and the public status pages.
 
 ### Audit trail
 
@@ -510,6 +544,7 @@ admin console. `mise tasks` lists everything: `db:create`, `db:drop`, `db:migrat
 | `uptime-store` | PostgreSQL, SQLite and Turso via Toasty: models, embedded migrations, leased check queue, result writes, retention. |
 | `uptime-probe` | Runs HTTP, TCP and DNS checks and reports raw observations; refuses private/internal addresses (resolved IPs, IP literals, redirects). Also inspects custom domains (DNS, HTTPS). |
 | `uptime-notify` | Renders alerts for Slack, Discord and HMAC-signed webhooks, and delivers them. |
+| `uptime-backup` | Encrypted, off-volume backups: `VACUUM INTO` snapshots, tar.gz packaging, age encryption and a background S3 (`PutObject`) upload. |
 | `uptime-runtime` | The scheduler loop (claim → probe → evaluate → record → publish), the alert sender, domain verification, the cluster bus bridge, the dead-man heartbeat and the retention janitor. |
 | `uptime-web` | HTTP surface: host routing, internal endpoints (`/healthz`, `/readyz`), the push API, Topcoat pages (console and status pages), vendored Starbase assets. |
 | `uptime-server` | The `uptimestatus` binary: config (figment), telemetry (tracing), CLI (clap), process wiring. |

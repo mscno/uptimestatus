@@ -45,6 +45,58 @@ pub struct Config {
     pub secrets: SecretsConfig,
     #[serde(default)]
     pub email: EmailConfig,
+    #[serde(default)]
+    pub backup: BackupConfig,
+}
+
+/// Encrypted, off-volume backups to a Fly Tigris (S3) bucket.
+///
+/// A run snapshots the local database, packages and encrypts it with age, and
+/// uploads it in the background. When `fly storage create` provides the bucket,
+/// the endpoint, region, bucket name and credentials arrive as `AWS_*` and
+/// `BUCKET_NAME` environment variables and do not need to be set here.
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BackupConfig {
+    /// Run a backup daily and allow `uptimestatus backup`.
+    pub enabled: bool,
+    /// S3 endpoint; defaults to `AWS_ENDPOINT_URL_S3`, then Fly Tigris.
+    pub endpoint: Option<String>,
+    /// S3 region; `auto` works for Tigris.
+    pub region: Option<String>,
+    /// Bucket name; defaults to `BUCKET_NAME`.
+    pub bucket: Option<String>,
+    /// Access key id; defaults to `AWS_ACCESS_KEY_ID`.
+    pub access_key_id: Option<Secret>,
+    /// Secret access key; defaults to `AWS_SECRET_ACCESS_KEY`.
+    pub secret_access_key: Option<Secret>,
+    /// The age recipient (`age1…`) archives are encrypted to. The matching
+    /// private identity is kept off the machine (see the deploy repository).
+    pub recipient: Option<String>,
+    /// Object key prefix; run names are appended.
+    pub prefix: Option<String>,
+    /// UTC time of day to run, `HH:MM`.
+    pub at: Option<String>,
+    /// How long writes may be paused while the snapshot is taken.
+    #[serde(with = "humantime_serde")]
+    pub write_timeout: Duration,
+}
+
+impl Default for BackupConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: None,
+            region: None,
+            bucket: None,
+            access_key_id: None,
+            secret_access_key: None,
+            recipient: None,
+            prefix: None,
+            at: None,
+            write_timeout: Duration::from_secs(30),
+        }
+    }
 }
 
 /// Email through Lettermint: alert channels, status page subscriptions and
@@ -386,6 +438,84 @@ impl Config {
                     .split("__"),
             )
             .merge(Env::raw().only(&["DATABASE_URL"]))
+    }
+
+    /// The resolved encrypted-backup settings, when backups are enabled.
+    ///
+    /// Credentials and the bucket name fall back to the variables Fly injects
+    /// for a Tigris bucket (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+    /// `AWS_ENDPOINT_URL_S3`, `BUCKET_NAME`), so attaching a bucket to the app
+    /// is enough to configure them.
+    pub fn backup_settings(&self) -> anyhow::Result<Option<uptime_backup::BackupSettings>> {
+        let backup = &self.backup;
+        if !backup.enabled {
+            return Ok(None);
+        }
+        anyhow::ensure!(
+            self.database.backend != uptime_store::Backend::Postgres,
+            "backup requires the local SQLite or Turso database (database.backend)"
+        );
+        let url = self.database_url.expose();
+        let path = url
+            .strip_prefix("turso:")
+            .or_else(|| url.strip_prefix("sqlite:"))
+            .filter(|path| path.starts_with('/') && !path.starts_with("//"))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "backup requires an absolute local database path, \
+                     e.g. turso:/data/db/uptimestatus.db"
+                )
+            })?;
+        let env = |name: &str| {
+            std::env::var(name)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        };
+        let credential = |value: &Option<Secret>, name: &str| {
+            value
+                .as_ref()
+                .map(|secret| secret.expose().trim().to_owned())
+                .or_else(|| env(name))
+                .ok_or_else(|| anyhow::anyhow!("backup credential {name} is required"))
+        };
+        let recipient = backup
+            .recipient
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("backup.recipient is required: an age1… public key"))?;
+        Ok(Some(uptime_backup::BackupSettings {
+            s3: uptime_backup::S3Settings {
+                endpoint: backup
+                    .endpoint
+                    .clone()
+                    .or_else(|| env("AWS_ENDPOINT_URL_S3"))
+                    .or_else(|| env("AWS_ENDPOINT_URL"))
+                    .unwrap_or_else(|| "https://fly.storage.tigris.dev".to_owned()),
+                region: backup
+                    .region
+                    .clone()
+                    .or_else(|| env("AWS_REGION"))
+                    .unwrap_or_else(|| "auto".to_owned()),
+                bucket: backup
+                    .bucket
+                    .clone()
+                    .or_else(|| env("BUCKET_NAME"))
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("backup.bucket is required (or set BUCKET_NAME)")
+                    })?,
+                access_key_id: credential(&backup.access_key_id, "AWS_ACCESS_KEY_ID")?,
+                secret_access_key: credential(&backup.secret_access_key, "AWS_SECRET_ACCESS_KEY")?,
+            },
+            recipient,
+            prefix: backup
+                .prefix
+                .clone()
+                .unwrap_or_else(|| "uptimestatus/".to_owned()),
+            database_path: std::path::PathBuf::from(path),
+            uploads: self.storage.path.as_ref().map(|root| root.join("images")),
+            write_timeout: backup.write_timeout,
+            at: uptime_backup::TimeOfDay::parse(backup.at.as_deref().unwrap_or("03:17"))?,
+        }))
     }
 }
 
@@ -764,6 +894,67 @@ mod tests {
                 .unwrap_err()
                 .to_string();
             assert!(error.contains("64 bytes"), "{error}");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn backups_are_off_until_enabled_and_use_fly_bucket_variables() {
+        Jail::expect_with(|jail| {
+            jail.clear_env();
+            required_env(jail);
+            jail.set_env("DATABASE_URL", "turso:/data/db/uptimestatus.db");
+            jail.set_env("UPTIMESTATUS_DATABASE__BACKEND", "turso");
+            jail.set_env("UPTIMESTATUS_STORAGE__PATH", "/data");
+            assert!(Config::load().unwrap().backup_settings().unwrap().is_none());
+
+            jail.set_env("UPTIMESTATUS_BACKUP__ENABLED", "true");
+            // Enabled without a recipient is refused.
+            assert!(Config::load().unwrap().backup_settings().is_err());
+
+            // Fly injects these for a Tigris bucket attached to the app.
+            jail.set_env(
+                "UPTIMESTATUS_BACKUP__RECIPIENT",
+                "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+            );
+            jail.set_env("AWS_ACCESS_KEY_ID", "id");
+            jail.set_env("AWS_SECRET_ACCESS_KEY", "secret");
+            jail.set_env("AWS_ENDPOINT_URL_S3", "https://fly.storage.tigris.dev");
+            jail.set_env("BUCKET_NAME", "uptimestatus-backups");
+            let settings = Config::load().unwrap().backup_settings().unwrap().unwrap();
+            assert_eq!(settings.s3.bucket, "uptimestatus-backups");
+            assert_eq!(settings.s3.endpoint, "https://fly.storage.tigris.dev");
+            assert_eq!(settings.prefix, "uptimestatus/");
+            assert_eq!(
+                settings.database_path,
+                std::path::PathBuf::from("/data/db/uptimestatus.db")
+            );
+            assert_eq!(
+                settings.uploads,
+                Some(std::path::PathBuf::from("/data/images"))
+            );
+            assert_eq!(settings.at.to_string(), "03:17");
+            assert_eq!(settings.write_timeout, Duration::from_secs(30));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn backups_require_a_local_database() {
+        Jail::expect_with(|jail| {
+            jail.clear_env();
+            required_env(jail);
+            jail.set_env("UPTIMESTATUS_BACKUP__ENABLED", "true");
+            jail.set_env(
+                "UPTIMESTATUS_BACKUP__RECIPIENT",
+                "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+            );
+            let error = Config::load()
+                .unwrap()
+                .backup_settings()
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("local"), "{error}");
             Ok(())
         });
     }

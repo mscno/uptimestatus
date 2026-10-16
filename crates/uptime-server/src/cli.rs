@@ -43,6 +43,8 @@ pub enum Command {
         #[arg(long, short)]
         output: Option<PathBuf>,
     },
+    /// Take one encrypted backup now and upload it to the configured bucket.
+    Backup,
     /// Manage the keys that encrypt secrets at rest.
     Secrets {
         #[command(subcommand)]
@@ -168,6 +170,7 @@ mod tests {
             }
         );
         assert_eq!(parse(&["migrate"]), Command::Migrate);
+        assert_eq!(parse(&["backup"]), Command::Backup);
         assert_eq!(
             parse(&["export", "-o", "all.toml"]),
             Command::Export {

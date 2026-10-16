@@ -394,6 +394,19 @@ pub async fn run(
         }
         None
     };
+    if roles.worker {
+        if let Some(settings) = config.backup_settings()? {
+            let at = settings.at;
+            let backup = uptime_backup::Backup::new(store.clone(), settings)?;
+            let backup_shutdown = shutdown.clone();
+            tracing::info!(%at, "encrypted backups enabled");
+            background.push(tokio::spawn(
+                async move { backup.run(backup_shutdown).await },
+            ));
+        } else {
+            tracing::info!("encrypted backups disabled (backup.enabled = false)");
+        }
+    }
     if roles.web {
         let (reload, shutdown) = (reload.clone(), shutdown.clone());
         background.push(tokio::spawn(async move {

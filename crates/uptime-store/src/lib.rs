@@ -5,12 +5,14 @@
 
 mod audit;
 mod auth;
+mod backup;
 pub mod bus;
 mod components;
 mod config;
 mod convert;
 mod domains;
 mod error;
+mod gate;
 mod groups;
 mod incidents;
 mod maintenance;
@@ -34,9 +36,11 @@ use toasty_core::driver::operation::TransactionMode;
 
 pub use audit::{AuditEvent, AuditQuery, AuditTarget, NewAuditEvent};
 pub use auth::{AdminUser, GithubIdentity, NewSession, SessionInfo};
+pub use backup::BackupCounts;
 pub use components::ComponentStatusEvent;
 pub use domains::{CustomDomain, DomainStatus};
 pub use error::StoreError;
+pub use gate::{WriteGate, WriteGuard};
 pub use incidents::{Incident, IncidentUpdate, NewIncident};
 pub use maintenance::Maintenance;
 pub use monitors::{Monitor, MonitorOverview, RuntimeSnapshot};
@@ -109,6 +113,8 @@ pub struct Store {
     sealer: secrets::Sealer,
     /// Queue news for status page subscribers (email is configured).
     subscriptions: bool,
+    /// Pauses writes while a backup snapshots the database.
+    gate: WriteGate,
 }
 
 impl Store {
@@ -158,6 +164,7 @@ impl Store {
             backend,
             sealer: secrets::Sealer::default(),
             subscriptions: false,
+            gate: WriteGate::default(),
         })
     }
 
@@ -174,6 +181,17 @@ impl Store {
     /// Whether secrets are encrypted (a keyring is configured).
     pub fn encrypts_secrets(&self) -> bool {
         self.sealer.keyring().is_some()
+    }
+
+    /// Pauses writes, best effort, until the returned guard is dropped. A
+    /// backup holds this while it snapshots the database; see [`WriteGate`].
+    pub fn pause_writes(&self) -> WriteGuard {
+        self.gate.block()
+    }
+
+    /// Whether writes are currently paused for a backup.
+    pub fn writes_paused(&self) -> bool {
+        self.gate.is_blocked()
     }
 
     pub(crate) fn sealer(&self) -> &secrets::Sealer {
@@ -240,6 +258,8 @@ impl Store {
         &self,
         db: &'a mut toasty::Db,
     ) -> Result<toasty::db::Transaction<'a>> {
+        // Every multi-statement write funnels through here: wait out a backup.
+        self.gate.wait().await;
         if self.backend == Backend::Turso {
             Ok(db
                 .transaction_builder()

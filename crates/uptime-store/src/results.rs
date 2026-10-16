@@ -407,6 +407,7 @@ impl Store {
     /// Safe to run from several instances at once.
     #[tracing::instrument(skip(self))]
     pub async fn prune_checks_before(&self, cutoff: Timestamp, batch: u32) -> Result<u64> {
+        self.gate.wait().await;
         let mut db = self.db();
         let mut total = 0;
         loop {

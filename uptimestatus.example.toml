@@ -66,3 +66,19 @@ path = "/data"         # uploaded logos and favicons; uploads are off when unset
 # project token is set; keep tokens in the environment
 # (UPTIMESTATUS_EMAIL__LETTERMINT_PROJECT_TOKEN, ..._TEAM_TOKEN, ..._WEBHOOK_SECRET).
 # default_from = "uptimestatus <alerts@example.com>"   # required with a token
+
+[backup]
+# Encrypted, off-volume backups to a Fly Tigris (S3) bucket. SQLite and Turso
+# only. `fly storage create` injects AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+# AWS_ENDPOINT_URL_S3 and BUCKET_NAME, so usually only enabled and recipient
+# are needed. Keep the age identity off the machine.
+enabled = false
+# bucket = "uptimestatus-backups"       # or BUCKET_NAME (Fly)
+# recipient = "age1…"                   # the public half of an `age-keygen` identity
+# at = "03:17"                          # UTC time of day
+# endpoint = "https://fly.storage.tigris.dev"
+# region = "auto"
+# access_key_id = "…"                   # or AWS_ACCESS_KEY_ID
+# secret_access_key = "…"               # or AWS_SECRET_ACCESS_KEY
+# prefix = "uptimestatus/"
+# write_timeout = "30s"                 # how long writes may pause for the snapshot

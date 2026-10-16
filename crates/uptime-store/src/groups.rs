@@ -134,6 +134,7 @@ impl Store {
     /// they re-judge promptly after it changed state. Groups being checked
     /// right now are skipped. Returns how many were made due.
     pub async fn expedite_groups(&self, id: MonitorId, now: Timestamp) -> Result<u64> {
+        self.gate.wait().await;
         let monitors = self.list_monitors().await?;
         let Some(changed) = monitors.iter().find(|m| m.id == id) else {
             return Ok(0);

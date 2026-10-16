@@ -67,6 +67,7 @@ impl Store {
     /// Records a heartbeat for the push monitor with `token` and makes it due
     /// now, so the push is judged at once. `None` if no monitor has the token.
     pub async fn record_push(&self, token: &str, push: &Push) -> Result<Option<MonitorId>> {
+        self.gate.wait().await;
         let mut db = self.db();
         let indexes = self.sealer().blind_indexes(convert::PUSH_TOKEN, token);
         let candidates =

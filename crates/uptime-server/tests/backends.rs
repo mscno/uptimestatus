@@ -39,6 +39,7 @@ fn config(url: &str, backend: Backend) -> Config {
         storage: StorageConfig::default(),
         secrets: SecretsConfig::default(),
         email: Default::default(),
+        backup: Default::default(),
     }
 }
 

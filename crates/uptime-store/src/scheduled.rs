@@ -172,6 +172,7 @@ impl Store {
         body: &str,
         declaration: Option<(&str, Impact)>,
     ) -> Result<ScheduledUpdate> {
+        self.gate.wait().await;
         let current = self
             .scheduled(id)
             .await?
@@ -195,6 +196,7 @@ impl Store {
 
     /// Records why publishing failed; the item waits until it is edited.
     pub async fn fail_scheduled(&self, id: i64, error: &str) -> Result<()> {
+        self.gate.wait().await;
         ScheduledUpdateRecord::update_by_id(id)
             .error(Some(error.to_owned()))
             .exec(&mut self.db())
@@ -203,6 +205,7 @@ impl Store {
     }
 
     pub async fn cancel_scheduled(&self, id: i64) -> Result<bool> {
+        self.gate.wait().await;
         let deleted =
             toasty::sql::statement(r#"DELETE FROM "scheduled_incident_updates" WHERE "id" = $1"#)
                 .bind(id)

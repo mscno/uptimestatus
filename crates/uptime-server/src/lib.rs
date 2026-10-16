@@ -99,6 +99,21 @@ pub async fn run(
                 None => std::io::Write::write_all(&mut std::io::stdout(), text.as_bytes())?,
             }
         }
+        Command::Backup => {
+            serve::prepare_secrets(&store).await?;
+            let settings = config.backup_settings()?.ok_or_else(|| {
+                anyhow::anyhow!("backups are disabled; set backup.enabled = true")
+            })?;
+            let backup = uptime_backup::Backup::new(store.clone(), settings)?;
+            let run = backup.run_once().await?;
+            tracing::info!(
+                object_key = %run.report.object_key,
+                bytes = run.report.archive_bytes,
+                "backup encrypted; uploading"
+            );
+            run.upload.await??;
+            tracing::info!("backup uploaded");
+        }
         Command::Serve { migrate, roles } => {
             if migrate {
                 store.migrate().await.context("applying migrations")?;

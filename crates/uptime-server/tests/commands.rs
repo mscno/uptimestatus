@@ -41,6 +41,7 @@ fn config(db: &TestDb) -> Config {
             keys: Some(Secret::new(uptime_testkit::TEST_KEYS)),
         },
         email: Default::default(),
+        backup: Default::default(),
     }
 }
 

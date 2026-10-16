@@ -106,6 +106,7 @@ impl Store {
     }
 
     pub async fn create_session(&self, session: &NewSession) -> Result<()> {
+        self.gate.wait().await;
         toasty::create!(SessionRecord {
             token_hash: hex(&session.token_hash),
             user_id: session.user_id,
@@ -163,6 +164,7 @@ impl Store {
         expires_at: Timestamp,
         now: Timestamp,
     ) -> Result<()> {
+        self.gate.wait().await;
         toasty::sql::statement(
             r#"UPDATE "sessions" SET "expires_at" = $2, "last_seen_at" = $3 WHERE "token_hash" = $1"#,
         )
@@ -175,6 +177,7 @@ impl Store {
     }
 
     pub async fn delete_session(&self, token_hash: &[u8; 32]) -> Result<()> {
+        self.gate.wait().await;
         toasty::sql::statement(r#"DELETE FROM "sessions" WHERE "token_hash" = $1"#)
             .bind(hex(token_hash))
             .exec(&mut self.db())
@@ -184,6 +187,7 @@ impl Store {
 
     /// Deletes expired sessions. Returns how many were removed.
     pub async fn prune_sessions(&self, now: Timestamp) -> Result<u64> {
+        self.gate.wait().await;
         Ok(
             toasty::sql::statement(r#"DELETE FROM "sessions" WHERE "expires_at" <= $1"#)
                 .bind(self.raw_timestamp(now))
